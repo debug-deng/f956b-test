@@ -274,7 +274,9 @@ jobs:
         with:
           name: f956b-exploit-payloads
           path: artifacts/
-          if-no-files-found: error      - name: build summary
+          if-no-files-found: error
+
+      - name: build summary
         if: always()
         run: |
           {
