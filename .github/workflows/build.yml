@@ -152,18 +152,31 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p artifacts-kernel
-          KO=/tmp/KernelSU/drivers/kernelsu/kernelsu.ko
-          if [ ! -f "$KO" ]; then
-            KO=/tmp/KernelSU/kernel/kernelsu.ko
-          fi
-          if [ -f "$KO" ]; then
-            /opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip -d "$KO"
-            cp "$KO" artifacts-kernel/android14-6.1_kernelsu-q6q-F956BXXS4DZG3-kdp.ko
-            ls -la artifacts-kernel/
-          else
-            echo "WARNING: kernelsu.ko not built; check DDK step"
+          # The kernelsu.ko ends up at /opt/ddk/src/android14-6.1/drivers/kernelsu/kernelsu.ko
+          # (where the bind mount put our patched source). Try the expected
+          # absolute paths first; fall back to any kernelsu.ko findable
+          # under /tmp (in case the build wrote it elsewhere).
+          KO=""
+          for cand in \
+            /opt/ddk/src/android14-6.1/drivers/kernelsu/kernelsu.ko \
+            /opt/ddk/kdir/android14-6.1/drivers/kernelsu/kernelsu.ko \
+            /tmp/KernelSU/kernel/kernelsu.ko \
+            /tmp/KernelSU/drivers/kernelsu/kernelsu.ko; do
+            if [ -f "$cand" ]; then
+              KO="$cand"
+              break
+            fi
+          done
+          if [ -z "$KO" ]; then
+            echo "ERROR: kernelsu.ko not found in any expected location"
+            echo "Searching /opt/ddk and /tmp for kernelsu.ko:"
+            find /opt/ddk /tmp -name "kernelsu.ko" 2>/dev/null
             exit 1
           fi
+          echo "Found kernelsu.ko at $KO"
+          /opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip -d "$KO"
+          cp "$KO" artifacts-kernel/android14-6.1_kernelsu-q6q-F956BXXS4DZG3-kdp.ko
+          ls -la artifacts-kernel/
 
       - name: build ksud userspace (Rust)
         run: |
