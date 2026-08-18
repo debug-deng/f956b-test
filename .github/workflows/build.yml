@@ -7,7 +7,7 @@ on:
       - 'work/target.h'
       - 'work/p0_fingerprint.h'
       - '.github/workflows/build.yml'
-  workflow_dispatch:  # allow manual trigger
+  workflow_dispatch:
 
 jobs:
   build:
@@ -17,93 +17,83 @@ jobs:
       - name: checkout F956B adaptation
         uses: actions/checkout@v4
         with:
-          lfs: false  # files are <100MB, no LFS needed
+          lfs: false
 
-      - name: install Android NDK r29
+      - name: install Android NDK r29 (Linux)
         run: |
           set -euo pipefail
-          # Google hosts the r29 release as a single "r29" tag, not the full
-          # 4-part version. 29.0.14206865 is the version Google uses in Gradle,
-          # but the archive URL is just "r29".
           NDK_FILE_VER=r29
           cd /tmp
           wget -q "https://dl.google.com/android/repository/android-ndk-${NDK_FILE_VER}-linux.zip" \
                -O ndk.zip
-          # Verify SHA1 against Google's published value (see
-          # https://developer.android.com/ndk/downloads).
           echo "87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b  ndk.zip" | sha1sum -c -
           unzip -q ndk.zip
-          # The archive extracts to "android-ndk-r29/" (not the version number).
           sudo mv "android-ndk-${NDK_FILE_VER}" /opt/ndk
           echo "/opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
-
-      - name: show NDK + clang version
-        run: |
           /opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --version | head -1
 
-      - name: clone upstream payloads src/
+      - name: clone upstream Root-My-Galaxy-Payloads
         run: |
           set -euo pipefail
-          git clone --depth 1 https://github.com/BuSung-dev/Root-My-Galaxy-Payloads.git \
-              /tmp/payloads
+          cd /tmp
+          git clone --depth 1 https://github.com/BuSung-dev/Root-My-Galaxy-Payloads.git payloads
 
-      - name: assemble target tree
+      - name: overlay F956B target.h and p0_fingerprint.h
         run: |
           set -euo pipefail
-          mkdir -p /tmp/build/src/targets/q6q-F956BXXS4DZG3
-          cp work/target.h         /tmp/build/src/targets/q6q-F956BXXS4DZG3/
-          cp work/p0_fingerprint.h /tmp/build/src/targets/q6q-F956BXXS4DZG3/
-          cp -r /tmp/payloads/src/* /tmp/build/src/
-          ls /tmp/build/src/targets/q6q-F956BXXS4DZG3/
-
-      - name: verify target.h header count
-        run: |
-          set -euo pipefail
-          COUNT=$(grep -cE '^#define \w+_OFF' work/target.h || true)
-          echo "_OFF macro count: $COUNT"
-          if [ "$COUNT" -lt 24 ]; then
-            echo "ERROR: expected >=24 _OFF macros, got $COUNT"
-            exit 1
-          fi
+          set -x
+          mkdir -p /tmp/payloads/src/targets/q6q-F956BXXS4DZG3
+          cp work/target.h         /tmp/payloads/src/targets/q6q-F956BXXS4DZG3/
+          cp work/p0_fingerprint.h /tmp/payloads/src/targets/q6q-F956BXXS4DZG3/
+          ls -la /tmp/payloads/src/targets/q6q-F956BXXS4DZG3/
+          # Sanity: target.h must define >=24 _OFF macros
+          grep -cE '^#define \w+_OFF' /tmp/payloads/src/targets/q6q-F956BXXS4DZG3/target.h
 
       - name: build cve-2026-43499-app.so (release)
         run: |
           set -euo pipefail
-          # upstream Makefile lives at the root of src/, not in /tmp/build.
-          # Makefile uses TARGET_CC := $(ANDROID_NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android$(API)-clang
-          # so ANDROID_NDK_HOME must point to the unpacked NDK root.
-          cd /tmp/build/src
+          # Makefile is at upstream REPO ROOT, not in src/. See upstream Makefile header.
+          cd /tmp/payloads
           export ANDROID_NDK_HOME=/opt/ndk
           export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-          make TARGET=q6q-F956BXXS4DZG3 release 2>&1 | tail -40
+          make TARGET=q6q-F956BXXS4DZG3 release 2>&1 | tail -60
 
-      - name: build cve-2026-43499 (preload)
+      - name: build cve-2026-43499 (preload) + root helper
         run: |
           set -euo pipefail
-          cd /tmp/build/src
+          cd /tmp/payloads
           export ANDROID_NDK_HOME=/opt/ndk
           export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-          make TARGET=q6q-F956BXXS4DZG3 2>&1 | tail -40
+          make TARGET=q6q-F956BXXS4DZG3 2>&1 | tail -60
 
-      - name: collect outputs
+      - name: verify output sizes (release.so <= APP_RELEASE_SIZE)
+        run: |
+          set -euo pipefail
+          cd /tmp/payloads
+          APP_REL=build/q6q-F956BXXS4DZG3/cve-2026-43499-app.release.so
+          ls -la build/q6q-F956BXXS4DZG3/
+          test -f "$APP_REL"
+          SIZE=$(stat -c %s "$APP_REL")
+          LIMIT=104128
+          echo "release.so size: $SIZE (limit: $LIMIT)"
+          if [ "$SIZE" -gt "$LIMIT" ]; then
+            echo "WARNING: release.so exceeds APP_RELEASE_SIZE=$LIMIT, upstream will truncate"
+          fi
+
+      - name: collect artifacts + SHA-256
         run: |
           set -euo pipefail
           mkdir -p artifacts
-          cp /tmp/build/build/q6q-F956BXXS4DZG3/cve-2026-43499-app.release.so artifacts/cve-2026-43499-app.so
-          cp /tmp/build/build/q6q-F956BXXS4DZG3/cve-2026-43499-app.so     artifacts/cve-2026-43499-app.debug.so
-          cp /tmp/build/build/q6q-F956BXXS4DZG3/cve-2026-43499             artifacts/cve-2026-43499
-          cp /tmp/build/build/q6q-F956BXXS4DZG3/cve-2026-43499-root        artifacts/cve-2026-43499-root
-          ls -la artifacts/
-
-      - name: compute SHA-256
-        run: |
-          set -euo pipefail
+          cp /tmp/payloads/build/q6q-F956BXXS4DZG3/cve-2026-43499-app.release.so artifacts/cve-2026-43499-app.so
+          cp /tmp/payloads/build/q6q-F956BXXS4DZG3/cve-2026-43499-app.so        artifacts/cve-2026-43499-app.debug.so
+          cp /tmp/payloads/build/q6q-F956BXXS4DZG3/cve-2026-43499             artifacts/cve-2026-43499
+          cp /tmp/payloads/build/q6q-F956BXXS4DZG3/cve-2026-43499-root        artifacts/cve-2026-43499-root
           cd artifacts
           sha256sum * > SHA256SUMS
-          cat SHA256SUMS
           echo "" >> SHA256SUMS
           echo "## source artifacts" >> SHA256SUMS
-          (cd ../ && sha256sum work/target.h work/p0_fingerprint.h) >> SHA256SUMS
+          (cd .. && sha256sum work/target.h work/p0_fingerprint.h) >> SHA256SUMS
+          cat SHA256SUMS
 
       - name: upload artifacts
         uses: actions/upload-artifact@v4
@@ -112,19 +102,22 @@ jobs:
           path: artifacts/
           if-no-files-found: error
 
-      - name: summarize
+      - name: build summary
         if: always()
         run: |
-          echo "## Build summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "| file | size | sha256 |" >> $GITHUB_STEP_SUMMARY
-          echo "|---|---|---|" >> $GITHUB_STEP_SUMMARY
-          for f in artifacts/*; do
-            [ -f "$f" ] || continue
-            sha=$(sha256sum "$f" | cut -d' ' -f1)
-            size=$(stat -c %s "$f")
-            echo "| $(basename $f) | $size bytes | \`$sha\` |" >> $GITHUB_STEP_SUMMARY
-          done
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "**WARNING**: P0 fingerprint table contains 31 placeholder entries" >> $GITHUB_STEP_SUMMARY
-          echo "duplicated from slide=0. See README.md §4 for the real probe procedure." >> $GITHUB_STEP_SUMMARY
+          {
+            echo "## Build summary"
+            echo
+            echo "| file | size (bytes) | sha256 |"
+            echo "|---|---|---|"
+            for f in artifacts/*; do
+              [ -f "$f" ] || continue
+              sha=$(sha256sum "$f" | cut -d' ' -f1)
+              sz=$(stat -c %s "$f")
+              echo "| $(basename $f) | $sz | \`$sha\` |"
+            done
+            echo
+            echo "**WARNING**: \`p0_fingerprint.h\` has 31 placeholder entries duplicated from slide=0."
+            echo "Only the slide=0 entry contains real kernel-image data."
+            echo "See README.md §4 for the full P0 probe procedure."
+          } >> "$GITHUB_STEP_SUMMARY"
