@@ -275,6 +275,70 @@ DDKBUILD
             exit 1
           fi
 
+      - name: upload debug log on failure
+        if: failure()
+        run: |
+          set -euo pipefail
+          echo "uploading /tmp/ddk_build_full.log as debug artifact for diagnosis"
+          if [ ! -f /tmp/ddk_build_full.log ]; then
+            echo "  log missing, retrying docker run with full output capture"
+            cat > /tmp/ddk_build.sh <<'DDKBUILD'
+              #!/bin/bash
+              set -euo pipefail
+              export KDIR=/kernel_src
+              export ARCH=arm64
+              export CROSS_COMPILE=aarch64-linux-gnu-
+              export LLVM=1
+              export LLVM_IAS=1
+              cd "$KDIR"
+              if ! grep -q 'obj-$(CONFIG_KSU)' "$KDIR/drivers/Makefile"; then
+                echo "" >> "$KDIR/drivers/Makefile"
+                echo 'obj-$(CONFIG_KSU) += kernelsu/' >> "$KDIR/drivers/Makefile"
+              fi
+              if ! grep -q "drivers/kernelsu/Kconfig" "$KDIR/drivers/Kconfig"; then
+                sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' "$KDIR/drivers/Kconfig"
+              fi
+              if [ ! -f "$KDIR/.config" ]; then
+                cp "$KDIR/arch/arm64/configs/gki_defconfig" "$KDIR/.config"
+              fi
+              for cfg in "CONFIG_KSU=y" "CONFIG_KPROBES=y" "CONFIG_KPROBE_EVENTS=y" "CONFIG_EXT4_FS=y" "CONFIG_MODULES=y" "CONFIG_KSU_SAMSUNG_KDP=y" "CONFIG_KSU_SAMSUNG_RKP=y" "CONFIG_KSU_SAMSUNG_DEFEX=y"; do
+                key="${cfg%%=*}"
+                cur="$(grep -E "^${key}=" "$KDIR/.config" 2>/dev/null || echo "${key}=n")"
+                if [ "$cur" != "$cfg" ]; then
+                  sed -i "s/^${key}=.*/${cfg}/" "$KDIR/.config"
+                fi
+              done
+              cd "$KDIR"
+              make olddefconfig > /tmp/m1.log 2>&1 || echo "olddefconfig rc=$?"
+              make prepare > /tmp/m2.log 2>&1 || echo "prepare rc=$?"
+              make modules_prepare > /tmp/m3.log 2>&1 || echo "modules_prepare rc=$?"
+              make M=drivers/kernelsu modules -j"$(nproc)" > /tmp/m4.log 2>&1 || echo "build rc=$?"
+              echo "=== full m4.log ==="
+              cat /tmp/m4.log
+              echo "=== auto.conf check ==="
+              grep -E "CONFIG_KSU|drivers/kernelsu" include/config/auto.conf 2>&1 | head -5 || echo "  no auto.conf"
+DDKBUILD
+            chmod +x /tmp/ddk_build.sh
+            docker run --rm \
+              -v "/tmp/samsung-kernel/kernel_platform/msm-kernel:/kernel_src:rw" \
+              -v "/tmp/KernelSU/kernel:/kernel_src/drivers/kernelsu:rw" \
+              -v /tmp/ddk_build.sh:/tmp/ddk_build.sh:ro \
+              -w /kernel_src \
+              ghcr.io/ylarod/ddk-min:android14-6.1-20260313 \
+              bash /tmp/ddk_build.sh > /tmp/ddk_build_full.log 2>&1 || true
+          fi
+          mkdir -p debug-logs
+          cp /tmp/ddk_build_full.log debug-logs/ddk_build_full.log 2>&1 || echo "  no log to copy"
+          ls -la debug-logs/ 2>&1
+
+      - name: upload debug logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: f956b-debug-logs
+          path: debug-logs/
+          if-no-files-found: ignore
+
       - name: collect artifacts + SHA-256
         run: |
           set -euo pipefail
