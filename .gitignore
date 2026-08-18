@@ -10,3 +10,6 @@ __pycache__/
 
 # Local tools dir (downloaded vmlinux-to-elf, kept outside work/)
 tools/
+work/step3_gen_target_h_old.py
+
+tools/
