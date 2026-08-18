@@ -109,6 +109,7 @@ jobs:
             bash -c '
               set -euo pipefail
               KDIR=${KDIR:-/opt/ddk/kdir/android14-6.1}
+              export KDIR
               echo "== DDK env =="
               uname -a
               clang --version | head -1
