@@ -72,6 +72,144 @@ jobs:
           SIZE=$(stat -c %s "$APP_REL")
           echo "release.so size: $SIZE (limit 104128)"
 
+      - name: download Samsung F956B kernel source
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/samsung-kernel
+          cd /tmp/samsung-kernel
+          # The user uploads Kernel.tar.gz and Platform.tar.gz to a GitHub
+          # release on debug-deng/f956b-test and the release URL is fixed
+          # below. Update KERNEL_RELEASE_TAG to bump the snapshot.
+          KERNEL_RELEASE_TAG="${KERNEL_RELEASE_TAG:-v1}"
+          BASE="https://github.com/debug-deng/f956b-test/releases/download/${KERNEL_RELEASE_TAG}"
+          for f in Kernel.tar.gz Platform.tar.gz; do
+            if [ -f "$GITHUB_WORKSPACE/work/SM-F956B_16_Opensource/$f" ]; then
+              echo "using local $f"
+              continue
+            fi
+            echo "downloading $f from ${BASE}/$f"
+            wget -q "${BASE}/$f" -O "$f" || {
+              echo "::error::Could not download $f from release ${KERNEL_RELEASE_TAG}."
+              echo "Upload Kernel.tar.gz + Platform.tar.gz to debug-deng/f956b-test release ${KERNEL_RELEASE_TAG},"
+              echo "then re-run this workflow."
+              exit 1
+            }
+          done
+          ls -la *.tar.gz 2>&1
+          tar -xzf Kernel.tar.gz
+          tar -xzf Platform.tar.gz
+          ls /tmp/samsung-kernel | head
+
+      - name: build kernelsu.ko + ksud via DDK + samsung-main
+        run: |
+          set -euo pipefail
+          # samsung-main is tiann/KernelSU's branch with BuSung-dev's
+          # Samsung KDP/RKP/DEFEX patch already applied. No separate
+          # `git apply` needed.
+          cd /tmp
+          git clone --depth 1 -b samsung-main https://github.com/tiann/KernelSU.git 2>&1 | tail -3
+          cd KernelSU
+          git log -1 --oneline
+          ls kernel/ | head -5
+
+          # Build inside DDK container. The DDK image bundles a kernel source
+          # tree at /opt/ddk/kdir/android14-6.1/. We override the vermagic
+          # to 6.1.145-android14-11 to match the F956B target.
+          #
+          # We mount:
+          #   - /tmp/KernelSU/kernel -> /opt/ddk/kdir/android14-6.1/drivers/kernelsu/
+          #     (the directory setup.sh would normally symlink; we do it directly)
+          docker run --rm \
+            -v "/tmp/KernelSU/kernel:/opt/ddk/kdir/android14-6.1/drivers/kernelsu:rw" \
+            -w /opt/ddk/kdir/android14-6.1 \
+            -e KDIR=/opt/ddk/kdir/android14-6.1 \
+            -e ARCH=arm64 \
+            -e CROSS_COMPILE=aarch64-linux-gnu- \
+            -e LLVM=1 \
+            -e LLVM_IAS=1 \
+            ghcr.io/ylarod/ddk-min:android14-6.1-20260313 \
+            bash -c '
+              set -euo pipefail
+              export KDIR=${KDIR:-/opt/ddk/kdir/android14-6.1}
+              export ARCH=${ARCH:-arm64}
+              export CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-}
+              export LLVM=${LLVM:-1}
+              export LLVM_IAS=${LLVM_IAS:-1}
+              echo "== DDK env =="
+              uname -a
+              clang --version | head -1
+              echo "KDIR=$KDIR"
+              echo "== modules_prepare =="
+              cd "$KDIR"
+              make modules_prepare 2>&1 | tail -15
+              echo "== override vermagic to 6.1.145-android14-11 =="
+              sed -i "s/6.1.166-dirty/6.1.145-android14-11/g" \
+                  "$KDIR/include/config/kernel.release" 2>/dev/null || true
+              sed -i "s/6.1.166/6.1.145-android14-11/g" \
+                  "$KDIR/include/config/kernel.release" 2>/dev/null || true
+              printf "%s\n" \
+                "#define UTS_RELEASE \"6.1.145-android14-11\"" \
+                "#define VERMAGIC_STRING \"6.1.145-android14-11 SMP preempt mod_unload modversions aarch64\"" \
+                > "$KDIR/include/generated/utsrelease.h"
+              cat "$KDIR/include/config/kernel.release"
+              echo "== build kernelsu.ko in-tree via M=drivers/kernelsu =="
+              make M=drivers/kernelsu modules -j"$(nproc)" 2>&1 | tail -25
+              echo "== verify kernelsu.ko =="
+              ls -la drivers/kernelsu/kernelsu.ko 2>&1
+              modinfo drivers/kernelsu/kernelsu.ko 2>&1 | grep -E "vermagic|depends|srcversion"
+            '
+
+      - name: strip and copy kernelsu.ko
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts-kernel
+          KO=/tmp/KernelSU/drivers/kernelsu/kernelsu.ko
+          if [ ! -f "$KO" ]; then
+            KO=/tmp/KernelSU/kernel/kernelsu.ko
+          fi
+          if [ -f "$KO" ]; then
+            /opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip -d "$KO"
+            cp "$KO" artifacts-kernel/android14-6.1_kernelsu-q6q-F956BXXS4DZG3-kdp.ko
+            ls -la artifacts-kernel/
+          else
+            echo "WARNING: kernelsu.ko not built; check DDK step"
+            exit 1
+          fi
+
+      - name: build ksud userspace (Rust)
+        run: |
+          set -euo pipefail
+          cd /tmp/KernelSU
+          # kernelsu.ko must be at userspace/ksud/bin/aarch64/android14-6.1_kernelsu.ko
+          # so ksud can embed it.
+          mkdir -p userspace/ksud/bin/aarch64
+          if [ -f /tmp/KernelSU/drivers/kernelsu/kernelsu.ko ]; then
+            cp /tmp/KernelSU/drivers/kernelsu/kernelsu.ko userspace/ksud/bin/aarch64/android14-6.1_kernelsu.ko
+          else
+            cp /tmp/KernelSU/kernel/kernelsu.ko userspace/ksud/bin/aarch64/android14-6.1_kernelsu.ko
+          fi
+          ls -la userspace/ksud/bin/aarch64/
+          # Configure Rust for aarch64-linux-android
+          NDK_BIN="/opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export PATH="$HOME/.cargo/bin:$NDK_BIN:$PATH"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_BIN/aarch64-linux-android35-clang"
+          export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android35-clang"
+          export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
+          cargo build --release --target aarch64-linux-android -p ksud 2>&1 | tail -20
+
+      - name: copy ksud binary
+        run: |
+          set -euo pipefail
+          if [ -f /tmp/KernelSU/target/aarch64-linux-android/release/ksud ]; then
+            cp /tmp/KernelSU/target/aarch64-linux-android/release/ksud \
+               artifacts-kernel/ksud-q6q-F956BXXS4DZG3-kdp
+            chmod +x artifacts-kernel/ksud-q6q-F956BXXS4DZG3-kdp
+            ls -la artifacts-kernel/
+          else
+            echo "WARNING: ksud not built"
+            exit 1
+          fi
+
       - name: collect artifacts + SHA-256
         run: |
           set -euo pipefail
@@ -80,6 +218,10 @@ jobs:
           cp /tmp/payloads/build/q6q-F956BXXS4DZG3/cve-2026-43499-app.so        artifacts/cve-2026-43499-app.debug.so
           cp /tmp/payloads/build/q6q-F956BXXS4DZG3/cve-2026-43499             artifacts/cve-2026-43499
           cp /tmp/payloads/build/q6q-F956BXXS4DZG3/cve-2026-43499-root        artifacts/cve-2026-43499-root
+          # Include kernelsu.ko + ksud if they exist (KSU build is optional)
+          if [ -f artifacts-kernel/android14-6.1_kernelsu-q6q-F956BXXS4DZG3-kdp.ko ]; then
+            cp artifacts-kernel/* artifacts/
+          fi
           cd artifacts
           sha256sum * > SHA256SUMS
           echo "" >> SHA256SUMS
