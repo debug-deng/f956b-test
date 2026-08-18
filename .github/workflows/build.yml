@@ -176,6 +176,12 @@ jobs:
 
               echo "== build kernelsu.ko =="
               cd "$KDIR"
+              # Dump key config values from auto.conf to see what make actually
+              # thinks about CONFIG_KSU before we run modules.
+              echo "auto.conf: $(grep -E '^CONFIG_KSU\b' include/config/auto.conf || echo MISSING)"
+              echo "drivers/Makefile: $(grep 'obj-$(CONFIG_KSU)' drivers/Makefile)"
+              echo "drivers/kernelsu files: $(ls drivers/kernelsu/ | wc -l) entries"
+              ls drivers/kernelsu/ | head -3
               # Save full log to /tmp/build.log so we can grep it for errors
               # without losing early lines to 'tail'.
               make M=drivers/kernelsu modules -j"$(nproc)" > /tmp/build.log 2>&1
@@ -183,7 +189,7 @@ jobs:
               tail -40 /tmp/build.log
               echo ""
               echo "errors / warnings:"
-              grep -iE "error|warning:|undefined" /tmp/build.log | head -10 || echo "  none"
+              grep -iE "error|warning:|undefined" /tmp/build.log | head -20 || echo "  none"
 
               echo "== build artifacts =="
               find drivers/kernelsu/ -maxdepth 2 -type f 2>&1 | head -20
