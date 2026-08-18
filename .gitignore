@@ -4,6 +4,12 @@ work/boot.img
 work/boot.img.lz4
 work/meta-data/
 
+# Samsung opensource kernel source (640MB) is too large for direct git
+# push. The build workflow downloads it from the debug-deng/f956b-test
+# GitHub release v1 (see KERNEL_SOURCE_NOTE.md). Keep local copies
+# gitignored to prevent accidental commits.
+work/SM-F956B_16_Opensource/
+
 # Python cache
 __pycache__/
 *.pyc

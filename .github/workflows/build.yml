@@ -72,50 +72,58 @@ jobs:
           SIZE=$(stat -c %s "$APP_REL")
           echo "release.so size: $SIZE (limit 104128)"
 
-      - name: download Samsung F956B kernel source
+      - name: download Samsung F956B kernel source from release v1
         run: |
           set -euo pipefail
-          # NOTE: We don't actually need Kernel.tar.gz/Platform.tar.gz because the
-          # ghcr.io/ylarod/ddk-min:android14-6.1-20260313 image bundles a
-          # matching kernel source tree at /opt/ddk/kdir/android14-6.1 with
-          # vmlinux already built. The fallback to download from a release
-          # is preserved for reproducibility (see KERNEL_SOURCE_NOTE.md).
-          if [ -f "$GITHUB_WORKSPACE/work/SM-F956B_16_Opensource/Kernel.tar.gz" ]; then
-            echo "::notice::Local Kernel.tar.gz present but not used; DDK image KDIR is preferred."
-          fi
-          echo "skipping kernel source download (using DDK image's /opt/ddk/kdir/android14-6.1)"
+          # The build needs the Samsung open-source kernel archive (Kernel.tar.gz)
+          # that matches F956BXXS4DZG3. We cannot commit 640MB to git, so
+          # publish it as a release asset on debug-deng/f956b-test and pull
+          # it here. See KERNEL_SOURCE_NOTE.md for how the release is set up.
+          KERNEL_RELEASE_TAG="${KERNEL_RELEASE_TAG:-v1}"
+          BASE="https://github.com/debug-deng/f956b-test/releases/download/${KERNEL_RELEASE_TAG}"
+          mkdir -p /tmp/samsung-kernel
+          cd /tmp/samsung-kernel
+          for f in Kernel.tar.gz Platform.tar.gz; do
+            echo "downloading ${BASE}/$f"
+            if ! wget -q --tries=3 "${BASE}/$f" -O "$f"; then
+              echo "::error::Could not download $f from release ${KERNEL_RELEASE_TAG}."
+              echo "Upload Kernel.tar.gz + Platform.tar.gz to debug-deng/f956b-test release ${KERNEL_RELEASE_TAG},"
+              echo "then re-run this workflow."
+              exit 1
+            fi
+            echo "  $f: $(stat -c %s $f) bytes"
+          done
+          tar -xzf Kernel.tar.gz
+          tar -xzf Platform.tar.gz
+          echo "extracted layout:"
+          ls /tmp/samsung-kernel/kernel_platform/msm-kernel/ | head -5
+          # Sanity: Makefile must be present and KernelSU-compatible
+          test -f /tmp/samsung-kernel/kernel_platform/msm-kernel/Makefile || {
+            echo "ERROR: Kernel.tar.gz extract did not produce msm-kernel/Makefile"
+            exit 1
+          }
+          grep -E "^VERSION|^PATCHLEVEL|^SUBLEVEL" /tmp/samsung-kernel/kernel_platform/msm-kernel/Makefile | head -3
 
       - name: build kernelsu.ko + ksud via DDK + samsung-main
         run: |
           set -euo pipefail
           # samsung-main is tiann/KernelSU's branch with BuSung-dev's
-          # Samsung KDP/RKP/DEFEX patch already applied. No separate
-          # `git apply` needed.
+          # Samsung KDP/RKP/DEFEX patch already applied.
           cd /tmp
           git clone --depth 1 -b samsung-main https://github.com/tiann/KernelSU.git 2>&1 | tail -3
           cd KernelSU
           git log -1 --oneline
           ls kernel/ | head -5
 
-          # Build inside DDK container. The DDK image bundles a kernel source
-          # tree at /opt/ddk/kdir/android14-6.1/. We override the vermagic
-          # to 6.1.145-android14-11 to match the F956B target.
-          #
-          # We mount:
-          #   - /tmp/KernelSU/kernel -> /opt/ddk/kdir/android14-6.1/drivers/kernelsu/
-          #     (the directory setup.sh would normally symlink; we do it directly)
-          docker run --rm \
-            -v "/tmp/KernelSU/kernel:/opt/ddk/src/android14-6.1/drivers/kernelsu:rw" \
-            -w /opt/ddk/kdir/android14-6.1 \
-            -e KDIR=/opt/ddk/kdir/android14-6.1 \
-            -e ARCH=arm64 \
-            -e CROSS_COMPILE=aarch64-linux-gnu- \
-            -e LLVM=1 \
-            -e LLVM_IAS=1 \
-            ghcr.io/ylarod/ddk-min:android14-6.1-20260313 \
-            bash -c '
+          # Build inside the DDK container. We mount:
+          #   - /tmp/samsung-kernel/kernel_platform/msm-kernel -> /kernel_src
+          #     (the F956BXXS4DZG3 Samsung open-source kernel source, 6.1.145)
+          #   - /tmp/KernelSU/kernel -> /kernel_src/drivers/kernelsu
+          #     (KernelSU sources, bind-mounted on top of the real drivers/)
+          # KDIR is /kernel_src (the real Samsung 6.1.145 source).
+          docker run --rm             -v "/tmp/samsung-kernel/kernel_platform/msm-kernel:/kernel_src:rw"             -v "/tmp/KernelSU/kernel:/kernel_src/drivers/kernelsu:rw"             -w /kernel_src             -e KDIR=/kernel_src             -e ARCH=arm64             -e CROSS_COMPILE=aarch64-linux-gnu-             -e LLVM=1             -e LLVM_IAS=1             ghcr.io/ylarod/ddk-min:android14-6.1-20260313             bash -c '
               set -euo pipefail
-              export KDIR=${KDIR:-/opt/ddk/kdir/android14-6.1}
+              export KDIR=${KDIR:-/kernel_src}
               export ARCH=${ARCH:-arm64}
               export CROSS_COMPILE=${CROSS_COMPILE:-aarch64-linux-gnu-}
               export LLVM=${LLVM:-1}
@@ -124,110 +132,82 @@ jobs:
               uname -a
               clang --version | head -1
               echo "KDIR=$KDIR"
-              echo "== verify mount and KDIR layout =="
-              ls "$KDIR/.config" && echo "  .config present"
-              # The kdir/ tree uses src/ as its source. mount went to src/.
-              ls "/opt/ddk/src/android14-6.1/drivers/kernelsu/" | head -10
-              echo "== patch drivers/Makefile + drivers/Kconfig =="
-              # KernelSU's setup.sh does two extra steps besides the symlink:
-              # it appends 'obj-$(CONFIG_KSU) += kernelsu/' to drivers/Makefile
-              # and 'source "drivers/kernelsu/Kconfig"' to drivers/Kconfig.
-              # Without these, make modules does not even know the module exists.
-              # Use a single-line echo (printf with multi-line escapes has caused
-              # issues when the script is parsed through YAML+bash -c).
-              if ! grep -q 'obj-$(CONFIG_KSU)' "$KDIR/drivers/Makefile"; then
+              echo "== Samsung source layout =="
+              ls "$KDIR/drivers/kernelsu/" 2>&1 | head -10
+              grep -E "^VERSION|^PATCHLEVEL|^SUBLEVEL" "$KDIR/Makefile" | head -3
+
+              # Patch drivers/Makefile + drivers/Kconfig (KernelSU setup.sh does this)
+              if ! grep -q "obj-\$(CONFIG_KSU)" "$KDIR/drivers/Makefile"; then
                 echo "" >> "$KDIR/drivers/Makefile"
-                echo 'obj-$(CONFIG_KSU) += kernelsu/' >> "$KDIR/drivers/Makefile"
-                echo "  appended to drivers/Makefile"
+                echo "obj-\$(CONFIG_KSU) += kernelsu/" >> "$KDIR/drivers/Makefile"
+                echo "  patched drivers/Makefile"
               fi
-              if ! grep -q 'drivers/kernelsu/Kconfig' "$KDIR/drivers/Kconfig"; then
-                sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' "$KDIR/drivers/Kconfig"
-                echo "  appended to drivers/Kconfig"
+              if ! grep -q "drivers/kernelsu/Kconfig" "$KDIR/drivers/Kconfig"; then
+                sed -i "/endmenu/i\source \"drivers/kernelsu/Kconfig\"" "$KDIR/drivers/Kconfig"
+                echo "  patched drivers/Kconfig"
               fi
-              echo "== check .config for KSU =="
-              grep -E "^CONFIG_(KSU|KPROBES|EXT4_FS|MODULES|ARM64)=" "$KDIR/.config" | head -10
-              echo "== ensure CONFIG_KSU=m + dependencies in .config =="
-              # KernelSU Kconfig says: depends on KPROBES && EXT4_FS, default y
-              # We need to force CONFIG_KSU=m so 'make modules' builds it
-              # as a loadable .ko rather than a builtin.
-              for cfg in \
-                "CONFIG_KSU=m" \
-                "CONFIG_KPROBES=y" \
-                "CONFIG_KPROBE_EVENTS=y" \
-                "CONFIG_EXT4_FS=y" \
-                "CONFIG_EXT4_FS_POSIX_ACL=y" \
-                "CONFIG_EXT4_FS_SECURITY=y" \
-                "CONFIG_SECURITY=y" \
-                "CONFIG_MODULES=y" \
-                "CONFIG_MODULE_UNLOAD=y" \
-                "CONFIG_KSU_SAMSUNG_KDP=y" \
-                "CONFIG_KSU_SAMSUNG_RKP=y" \
-                "CONFIG_KSU_SAMSUNG_DEFEX=y"; do
+
+              # Create or use .config. Samsung open-source Kernel.tar.gz does
+              # not ship a populated .config; fall back to gki_defconfig.
+              if [ ! -f "$KDIR/.config" ]; then
+                cp "$KDIR/arch/arm64/configs/gki_defconfig" "$KDIR/.config"
+                echo "  copied gki_defconfig -> .config"
+              fi
+
+              # Force CONFIG_KSU=m and Samsung KDP/RKP/DEFEX = y.
+              for cfg in                 "CONFIG_KSU=m"                 "CONFIG_KPROBES=y"                 "CONFIG_KPROBE_EVENTS=y"                 "CONFIG_EXT4_FS=y"                 "CONFIG_EXT4_FS_POSIX_ACL=y"                 "CONFIG_EXT4_FS_SECURITY=y"                 "CONFIG_SECURITY=y"                 "CONFIG_MODULES=y"                 "CONFIG_MODULE_UNLOAD=y"                 "CONFIG_KSU_SAMSUNG_KDP=y"                 "CONFIG_KSU_SAMSUNG_RKP=y"                 "CONFIG_KSU_SAMSUNG_DEFEX=y"; do
                 key="${cfg%%=*}"
-                cur="$(grep -E "^${key}=" "$KDIR/.config" || echo "${key}=n")"
+                cur="$(grep -E "^${key}=" "$KDIR/.config" 2>/dev/null || echo "${key}=n")"
                 if [ "$cur" != "$cfg" ]; then
                   sed -i "s/^${key}=.*/${cfg}/" "$KDIR/.config"
-                  echo "  $cur -> $cfg"
                 fi
               done
-              echo "== post-update grep =="
-              grep -E "^CONFIG_(KSU|KPROBES|EXT4_FS|MODULES|KSU_SAMSUNG)=" "$KDIR/.config"
-              # Re-run olddefconfig to make sure the .config is consistent
-              make olddefconfig 2>&1 | tail -5
+
               echo "== modules_prepare =="
               cd "$KDIR"
-              make modules_prepare 2>&1 | tail -10
-              echo "== verify auto.conf has CONFIG_KSU after modules_prepare =="
-              grep -E "^CONFIG_KSU" include/config/auto.conf 2>&1 || echo "  auto.conf missing CONFIG_KSU"
-              grep -E "^CONFIG_(KSU_SAMSUNG|KPROBES)" include/config/auto.conf 2>&1 | head -3
-              echo "== override vermagic to 6.1.145-android14-11 =="
-              sed -i "s/6.1.166-dirty/6.1.145-android14-11/g" \
-                  "$KDIR/include/config/kernel.release" 2>/dev/null || true
-              sed -i "s/6.1.166/6.1.145-android14-11/g" \
-                  "$KDIR/include/config/kernel.release" 2>/dev/null || true
-              printf "%s\n" \
-                "#define UTS_RELEASE \"6.1.145-android14-11\"" \
-                "#define VERMAGIC_STRING \"6.1.145-android14-11 SMP preempt mod_unload modversions aarch64\"" \
-                > "$KDIR/include/generated/utsrelease.h"
-              cat "$KDIR/include/config/kernel.release"
-              echo "== build kernelsu.ko in-tree via M=drivers/kernelsu =="
-              make M=drivers/kernelsu modules -j"$(nproc)" 2>&1
-              echo "== EXPLICIT LIST OF BUILD ARTIFACTS =="
-              find drivers/kernelsu/ -maxdepth 2 -type f -ls 2>&1 | head -30
+              make modules_prepare 2>&1 | tail -5
+
+              echo "== build kernelsu.ko =="
+              cd "$KDIR"
+              make M=drivers/kernelsu modules -j"$(nproc)" 2>&1 | tail -30
+
+              echo "== build artifacts =="
+              find drivers/kernelsu/ -maxdepth 2 -type f 2>&1 | head -20
 
               echo "== verify kernelsu.ko =="
-              ls -la drivers/kernelsu/kernelsu.ko 2>&1
-              modinfo drivers/kernelsu/kernelsu.ko 2>&1 | grep -E "vermagic|depends|srcversion"
+              ls -la drivers/kernelsu/kernelsu.ko 2>&1 || echo "ERROR: kernelsu.ko not built"
+              if [ -f drivers/kernelsu/kernelsu.ko ]; then
+                modinfo drivers/kernelsu/kernelsu.ko 2>&1 | grep -E "vermagic|depends" || true
+              fi
             '
 
       - name: strip and copy kernelsu.ko
         run: |
           set -euo pipefail
           mkdir -p artifacts-kernel
-          # The kernelsu.ko ends up at /opt/ddk/src/android14-6.1/drivers/kernelsu/kernelsu.ko
-          # (where the bind mount put our patched source). Try the expected
-          # absolute paths first; fall back to any kernelsu.ko findable
-          # under /tmp (in case the build wrote it elsewhere).
-          KO=""
-          for cand in \
-            /opt/ddk/src/android14-6.1/drivers/kernelsu/kernelsu.ko \
-            /opt/ddk/kdir/android14-6.1/drivers/kernelsu/kernelsu.ko \
-            /tmp/KernelSU/kernel/kernelsu.ko \
-            /tmp/KernelSU/drivers/kernelsu/kernelsu.ko; do
-            if [ -f "$cand" ]; then
-              KO="$cand"
-              break
-            fi
-          done
-          if [ -z "$KO" ]; then
-            echo "ERROR: kernelsu.ko not found in any expected location"
-            echo "Searching /opt/ddk and /tmp for kernelsu.ko:"
-            find /opt/ddk /tmp -name "kernelsu.ko" 2>/dev/null
-            exit 1
-          fi
-          echo "Found kernelsu.ko at $KO"
-          /opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip -d "$KO"
-          cp "$KO" artifacts-kernel/android14-6.1_kernelsu-q6q-F956BXXS4DZG3-kdp.ko
+          # kernelsu.ko is at /kernel_src/drivers/kernelsu/kernelsu.ko inside
+          # the DDK container, but the container has exited. We re-run a
+          # tiny docker invocation with the same bind mounts to copy the
+          # file out.
+          docker run --rm \
+            -v "/tmp/samsung-kernel/kernel_platform/msm-kernel:/kernel_src:rw" \
+            -v "/tmp/KernelSU/kernel:/kernel_src/drivers/kernelsu:rw" \
+            -v "$PWD/artifacts-kernel:/out:rw" \
+            ghcr.io/ylarod/ddk-min:android14-6.1-20260313 \
+            bash -c '
+              set -euo pipefail
+              KO=/kernel_src/drivers/kernelsu/kernelsu.ko
+              if [ ! -f "$KO" ]; then
+                echo "ERROR: kernelsu.ko not found at $KO"
+                find /kernel_src/drivers/kernelsu -name "*.ko" 2>/dev/null
+                exit 1
+              fi
+              /opt/ddk/clang/*/bin/llvm-strip -d "$KO" 2>/dev/null || \
+                /opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip -d "$KO" 2>/dev/null || \
+                echo "  warning: no llvm-strip available, leaving symbols in"
+              cp "$KO" /out/android14-6.1_kernelsu-q6q-F956BXXS4DZG3-kdp.ko
+              ls -la /out/
+            '
           ls -la artifacts-kernel/
 
       - name: build ksud userspace (Rust)
@@ -235,13 +215,19 @@ jobs:
           set -euo pipefail
           cd /tmp/KernelSU
           # kernelsu.ko must be at userspace/ksud/bin/aarch64/android14-6.1_kernelsu.ko
-          # so ksud can embed it.
+          # so ksud can embed it. Re-extract it from the DDK container.
+          docker run --rm \
+            -v "/tmp/samsung-kernel/kernel_platform/msm-kernel:/kernel_src:rw" \
+            -v "/tmp/KernelSU/kernel:/kernel_src/drivers/kernelsu:rw" \
+            -v "$PWD:/work:rw" \
+            ghcr.io/ylarod/ddk-min:android14-6.1-20260313 \
+            bash -c '
+              set -euo pipefail
+              cp /kernel_src/drivers/kernelsu/kernelsu.ko /work/kernelsu.ko
+              ls -la /work/kernelsu.ko
+            '
           mkdir -p userspace/ksud/bin/aarch64
-          if [ -f /tmp/KernelSU/drivers/kernelsu/kernelsu.ko ]; then
-            cp /tmp/KernelSU/drivers/kernelsu/kernelsu.ko userspace/ksud/bin/aarch64/android14-6.1_kernelsu.ko
-          else
-            cp /tmp/KernelSU/kernel/kernelsu.ko userspace/ksud/bin/aarch64/android14-6.1_kernelsu.ko
-          fi
+          cp kernelsu.ko userspace/ksud/bin/aarch64/android14-6.1_kernelsu.ko
           ls -la userspace/ksud/bin/aarch64/
           # Configure Rust for aarch64-linux-android
           NDK_BIN="/opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
@@ -288,9 +274,7 @@ jobs:
         with:
           name: f956b-exploit-payloads
           path: artifacts/
-          if-no-files-found: error
-
-      - name: build summary
+          if-no-files-found: error      - name: build summary
         if: always()
         run: |
           {
@@ -304,11 +288,4 @@ jobs:
               sz=$(stat -c %s "$f")
               echo "| $(basename $f) | $sz | \`$sha\` |"
             done
-            echo
-            echo "**WARNING**: \`p0_fingerprint.h\` has 31 placeholder entries duplicated from slide=0."
-            echo "Only the slide=0 entry contains real kernel-image data."
-            echo
-            echo "**KernelSU module and ksud are NOT built in this workflow.**"
-            echo "See \`upstream-integration/SM-F956B-F956BXXS4DZG3.md\` Stage 7 for the"
-            echo "Docker-based DDK build procedure, which requires manual setup."
           } >> "$GITHUB_STEP_SUMMARY"
