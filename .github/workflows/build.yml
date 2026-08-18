@@ -130,11 +130,13 @@ jobs:
                     "$KDIR/include/config/kernel.release"
               fi
               # Second: force-override utsrelease.h after modules_prepare.
-              cat > "$KDIR/include/generated/utsrelease.h" <<'UTS'
-#define UTS_RELEASE "6.1.145-android14-11"
-#define VERMAGIC_STRING "6.1.145-android14-11 SMP preempt mod_unload modversions aarch64"
-#define VERMAGIC_INCLUDE_STR "6.1.145-android14-11"
-UTS
+              # Use single-line printf (no heredoc; YAML parses bare '#' as
+              # comment start, which broke a heredoc UTS terminator above).
+              printf '%s\n' \
+                '#define UTS_RELEASE "6.1.145-android14-11"' \
+                '#define VERMAGIC_STRING "6.1.145-android14-11 SMP preempt mod_unload modversions aarch64"' \
+                '#define VERMAGIC_INCLUDE_STR "6.1.145-android14-11"' \
+                > "$KDIR/include/generated/utsrelease.h"
               cat "$KDIR/include/config/kernel.release"
               cat "$KDIR/include/generated/utsrelease.h"
 
