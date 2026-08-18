@@ -61,10 +61,17 @@ for cfg in \
   fi
 done
 # Patch KernelSU Kconfig to default to m so olddefconfig does not
-# override our explicit 'm'. Replace the 'default y' under 'config KSU'
-# with 'default m' (the line immediately follows the 'tristate' line).
-sed -i "s/^\(\s*default\s*\)y\(\s*#.*Enable kernel-level\)/\1m\2/" \
-    "$KDIR/drivers/kernelsu/Kconfig" || true
+# override our explicit 'm'. The relevant lines are:
+#   config KSU
+#       tristate "KernelSU function support"
+#       ...
+#       default y
+# Replace 'default y' with 'default m'. Use a more permissive regex.
+sed -i "s/^[[:space:]]*default[[:space:]]*y[[:space:]]*$/default m/" \
+    "$KDIR/drivers/kernelsu/Kconfig" 2>&1 | head
+# Verify
+echo "KernelSU Kconfig after patch:"
+grep -B 1 -A 1 "default" "$KDIR/drivers/kernelsu/Kconfig" | head -10
 
 cd "$KDIR"
 make olddefconfig > /tmp/m1.log 2>&1; echo "olddefconfig rc=$?"
