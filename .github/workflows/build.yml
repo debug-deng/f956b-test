@@ -93,14 +93,17 @@ jobs:
           git apply /tmp/payloads/kernelsu/patches/KernelSU-v3.2.5-samsung-kdp-rkp-defex.patch
           echo "patch applied"
 
-          # Now build inside DDK container. The DDK image ships a full 6.1 kernel
-          # source tree at /workspace with the vermagic pinned to 6.1.166-dirty;
-          # we override the vermagic to 6.1.145-android14-11 to match the F956B
-          # target. kernelsu/ is mounted on top of /workspace/kernel so the
-          # module-build commands find our patched sources.
+          # Build inside DDK container. The DDK image bundles a kernel source
+          # tree at KDIR=/opt/ddk/kdir/${ANDROID_VER}. For android14-6.1-20260313,
+          # that's /opt/ddk/kdir/android14-6.1/. The vermagic is 6.1.166-dirty
+          # by default; we sed-override the release string files so the resulting
+          # module matches the F956B target (6.1.145-android14-11).
+          #
+          # KernelSU source is mounted on top of ${KDIR}/kernel so module-build
+          # commands find our patched sources.
           docker run --rm \
             -v "/tmp/KernelSU:/workspace/kernel:rw" \
-            -v "/tmp/payloads/kernelsu/tools:/opt/ksu-tools:ro" \
+            -e KDIR=/opt/ddk/kdir/android14-6.1 \
             -w /workspace \
             ghcr.io/ylarod/ddk-min:android14-6.1-20260313 \
             bash -lc '
@@ -108,23 +111,28 @@ jobs:
               echo "== DDK env =="
               uname -a
               clang --version | head -1
-
-              echo "== verify Samsung kernel source is present =="
-              ls /workspace/include/generated/utsrelease.h
-              ls /workspace/include/config/kernel.release
-              cat /workspace/include/generated/utsrelease.h
-              echo "---"
-              cat /workspace/include/config/kernel.release
+              echo "== kernel source layout =="
+              ls -la "$KDIR"
+              ls -la "$KDIR/include/generated/" 2>/dev/null | head -10 || echo "no include/generated yet"
+              echo "== kernel.release =="
+              cat "$KDIR/include/config/kernel.release" 2>/dev/null || echo "no kernel.release yet"
+              echo "== build modules_prepare to populate include/ =="
+              cd "$KDIR"
+              make modules_prepare 2>&1 | tail -20
+              ls "$KDIR/include/generated/" | head -10
 
               echo "== override vermagic to 6.1.145-android14-11 =="
-              sed -i "s/6.1.166-dirty/6.1.145-android14-11/g" \
-                /workspace/include/generated/utsrelease.h \
-                /workspace/include/config/kernel.release
-              grep UTS_RELEASE /workspace/include/generated/utsrelease.h
-              cat /workspace/include/config/kernel.release
+              for f in "$KDIR/include/generated/utsrelease.h" \
+                       "$KDIR/include/config/kernel.release"; do
+                if [ -f "$f" ]; then
+                  sed -i "s/6.1.166-dirty/6.1.145-android14-11/g" "$f"
+                fi
+              done
+              cat "$KDIR/include/config/kernel.release"
+              grep UTS_RELEASE "$KDIR/include/generated/utsrelease.h"
 
               echo "== build kernelsu.ko =="
-              cd /workspace/kernel
+              cd "$KDIR/kernel"
               make clean
               CONFIG_KSU=m \
               CONFIG_KSU_SAMSUNG_KDP=y \
@@ -133,8 +141,8 @@ jobs:
               CC=clang make -j"$(nproc)" 2>&1 | tail -40
 
               echo "== verify kernelsu.ko =="
-              ls -la /workspace/kernel/kernelsu.ko
-              modinfo /workspace/kernel/kernelsu.ko 2>&1 | grep -E "vermagic|depends|srcversion"
+              ls -la "$KDIR/kernel/kernelsu.ko"
+              modinfo "$KDIR/kernel/kernelsu.ko" 2>&1 | grep -E "vermagic|depends|srcversion"
             '
 
       - name: strip and copy kernelsu.ko
