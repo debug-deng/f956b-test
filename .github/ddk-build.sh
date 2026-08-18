@@ -1,7 +1,19 @@
 #!/bin/bash
 # Build KernelSU.ko inside the DDK container against the Samsung
 # open-source kernel source. Called from .github/workflows/build.yml.
+#
+# Output: every line is written to /tmp/ddk_build.log on the runner
+# host (via `tee -a` on every command). At the end, the workflow
+# step does `tail -80 /tmp/ddk_build.log` and uploads the full log as
+# an artifact for offline diagnosis when the run fails.
 set -euo pipefail
+
+LOG=/tmp/ddk_build.log
+: > "$LOG"
+
+log() { echo "$@" | tee -a "$LOG"; }
+
+log "=== ddk-build.sh started at $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
 
 export KDIR=/kernel_src
 export ARCH=arm64
@@ -11,36 +23,34 @@ export LLVM_IAS=1
 
 cd "$KDIR"
 
-echo "== DDK env =="
-uname -a
-clang --version | head -1
-echo "KDIR=$KDIR"
-echo "== source layout =="
-ls "$KDIR/drivers/kernelsu/" 2>&1 | head -5
-grep -E "^VERSION|^PATCHLEVEL|^SUBLEVEL" "$KDIR/Makefile" | head -3
+log "== DDK env =="
+log "  $(uname -a)"
+log "  $(clang --version | head -1)"
+log "  KDIR=$KDIR"
+log "== source layout =="
+log "$(ls $KDIR/drivers/kernelsu/ | head -5 | tr '\n' ' ')"
+log "  $(grep -E '^VERSION|^PATCHLEVEL|^SUBLEVEL' $KDIR/Makefile | head -3 | tr '\n' ' ')"
 
 # Patch drivers/Makefile + drivers/Kconfig (KernelSU setup.sh does this).
 if ! grep -q 'obj-$(CONFIG_KSU)' "$KDIR/drivers/Makefile"; then
   echo "" >> "$KDIR/drivers/Makefile"
   echo 'obj-$(CONFIG_KSU) += kernelsu/' >> "$KDIR/drivers/Makefile"
-  echo "  patched drivers/Makefile"
+  log "  patched drivers/Makefile"
 fi
 if ! grep -q "drivers/kernelsu/Kconfig" "$KDIR/drivers/Kconfig"; then
   sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' "$KDIR/drivers/Kconfig"
-  echo "  patched drivers/Kconfig"
+  log "  patched drivers/Kconfig"
 fi
 
 # Samsung open-source Kernel.tar.gz does not ship a populated .config.
 if [ ! -f "$KDIR/.config" ]; then
   cp "$KDIR/arch/arm64/configs/gki_defconfig" "$KDIR/.config"
-  echo "  copied gki_defconfig"
+  log "  copied gki_defconfig"
 fi
 
-# Force CONFIG_KSU=m and Samsung KDP/RKP/DEFEX = y. CONFIG_KSU's
-# 'default y' in the Kconfig means olddefconfig would normalize 'm' to
-# 'y'; we set 'm' anyway and also override KSU's default in its
-# Kconfig file so the obj-$(CONFIG_KSU) += kernelsu/ entry produces a
-# loadable .ko rather than a built-in object.
+# Force CONFIG_KSU=m and Samsung KDP/RKP/DEFEX = y. CONFIG_KSU is
+# tristate with 'default y' so we also rewrite the Kconfig to
+# 'default m' to prevent olddefconfig from overwriting our 'm'.
 for cfg in \
   "CONFIG_KSU=m" \
   "CONFIG_KPROBES=y" \
@@ -60,39 +70,49 @@ for cfg in \
     sed -i "s/^${key}=.*/${cfg}/" "$KDIR/.config"
   fi
 done
-# Patch KernelSU Kconfig to default to m so olddefconfig does not
-# override our explicit 'm'. The relevant lines are:
-#   config KSU
-#       tristate "KernelSU function support"
-#       ...
-#       default y
-# Replace 'default y' with 'default m'. Use a more permissive regex.
+
+# Patch KernelSU Kconfig: 'default y' -> 'default m' so olddefconfig
+# does not normalize our explicit 'CONFIG_KSU=m'.
 sed -i "s/^[[:space:]]*default[[:space:]]*y[[:space:]]*$/default m/" \
-    "$KDIR/drivers/kernelsu/Kconfig" 2>&1 | head
-# Verify
-echo "KernelSU Kconfig after patch:"
-grep -B 1 -A 1 "default" "$KDIR/drivers/kernelsu/Kconfig" | head -10
+    "$KDIR/drivers/kernelsu/Kconfig"
+log "KernelSU Kconfig after patch:"
+log "$(grep -B 1 -A 1 default $KDIR/drivers/kernelsu/Kconfig | head -10 | tr '\n' '|')"
 
 cd "$KDIR"
-make olddefconfig > /tmp/m1.log 2>&1; echo "olddefconfig rc=$?"
-make prepare     > /tmp/m2.log 2>&1; echo "prepare rc=$?"
-grep -E "^CONFIG_KSU\b" include/config/auto.conf \
-  && echo "  auto.conf has KSU" \
-  || echo "WARN: auto.conf missing CONFIG_KSU"
-make modules_prepare > /tmp/m3.log 2>&1; echo "modules_prepare rc=$?"
+log "== run make olddefconfig =="
+make olddefconfig 2>&1 | tee -a "$LOG" | tail -10
+log "olddefconfig rc=${PIPESTATUS[0]}"
 
-cd "$KDIR"
-make M=drivers/kernelsu modules -j"$(nproc)" > /tmp/m4.log 2>&1; echo "build rc=$?"
-echo "tail of make log:"
-tail -60 /tmp/m4.log
-echo "errors:"
-grep -iE "error:|undefined" /tmp/m4.log | head -10 || echo "  none"
-echo "warnings:"
-grep -iE "warning:" /tmp/m4.log | head -10 || echo "  none"
+log "== run make prepare =="
+make prepare 2>&1 | tee -a "$LOG" | tail -10
+log "prepare rc=${PIPESTATUS[0]}"
 
-echo "== build artifacts =="
-find drivers/kernelsu/ -maxdepth 2 -name "*.o" -o -name "*.ko" 2>&1 | head -20
-ls -la drivers/kernelsu/kernelsu.ko 2>&1 || echo "ERROR: kernelsu.ko not built"
-if [ -f drivers/kernelsu/kernelsu.ko ]; then
-  modinfo drivers/kernelsu/kernelsu.ko 2>&1 | grep -E "vermagic|depends" || true
+log "== auto.conf check =="
+if grep -E "^CONFIG_KSU=m" include/config/auto.conf > "$LOG.tmp" 2>&1; then
+  log "  CONFIG_KSU=m present in auto.conf"
+  cat "$LOG.tmp" | tee -a "$LOG"
+else
+  log "  WARN: CONFIG_KSU=m NOT in auto.conf"
 fi
+rm -f "$LOG.tmp"
+
+log "== run make modules_prepare =="
+make modules_prepare 2>&1 | tee -a "$LOG" | tail -10
+log "modules_prepare rc=${PIPESTATUS[0]}"
+
+log "== run make M=drivers/kernelsu modules =="
+make M=drivers/kernelsu modules -j"$(nproc)" 2>&1 | tee -a "$LOG" | tail -60
+log "build rc=${PIPESTATUS[0]}"
+
+log "== build artifacts =="
+log "$(find drivers/kernelsu/ -maxdepth 2 -name '*.o' -o -name '*.ko' 2>&1 | head -20 | tr '\n' ' ')"
+if [ -f drivers/kernelsu/kernelsu.ko ]; then
+  log "  kernelsu.ko size: $(stat -c %s drivers/kernelsu/kernelsu.ko) bytes"
+  log "  $(modinfo drivers/kernelsu/kernelsu.ko | grep -E 'vermagic|depends|srcversion' | tr '\n' ' ')"
+else
+  log "ERROR: kernelsu.ko not built"
+  exit 1
+fi
+
+log "=== ddk-build.sh done at $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="
+log "=== log size: $(wc -c < $LOG) bytes, $(wc -l < $LOG) lines ==="
