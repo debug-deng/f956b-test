@@ -6,6 +6,8 @@ on:
     paths:
       - 'work/target.h'
       - 'work/p0_fingerprint.h'
+      - 'work/vmlinux.elf'
+      - 'work/vmlinux.btf'
       - '.github/workflows/build.yml'
   workflow_dispatch:
 
@@ -32,11 +34,21 @@ jobs:
           echo "/opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
           /opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/clang --version | head -1
 
+      - name: install Rust toolchain (for ksud userspace)
+        run: |
+          set -euo pipefail
+          curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --default-toolchain 1.78.0
+          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
+          rustc --version
+          cargo --version
+
       - name: clone upstream Root-My-Galaxy-Payloads
         run: |
           set -euo pipefail
           cd /tmp
           git clone --depth 1 https://github.com/BuSung-dev/Root-My-Galaxy-Payloads.git payloads
+          ls -la payloads/kernelsu/patches/
+          ls -la payloads/kernelsu/tools/
 
       - name: overlay F956B target.h and p0_fingerprint.h
         run: |
@@ -80,6 +92,105 @@ jobs:
             echo "WARNING: release.so exceeds APP_RELEASE_SIZE=$LIMIT, upstream will truncate"
           fi
 
+      - name: build kernelsu-q6q module via DDK container
+        run: |
+          set -euo pipefail
+          # Pull upstream KernelSU v3.2.5 source + apply Samsung patch.
+          cd /tmp
+          git clone --depth 1 https://github.com/tiann/KernelSU.git
+          cd KernelSU
+          git checkout b0bc817b4e966aa6aa830834eaf6ef765d821d40
+          # Apply Samsung KDP/RKP/DEFEX patch
+          git apply /tmp/payloads/kernelsu/patches/KernelSU-v3.2.5-samsung-kdp-rkp-defex.patch
+          echo "patch applied"
+
+      - name: build kernelsu.ko inside DDK container
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "/tmp/KernelSU:/workspace:rw" \
+            -v "/tmp/payloads/kernelsu/tools:/opt/ksu-tools:ro" \
+            -w /workspace/kernel \
+            ghcr.io/ylarod/ddk-min:android14-6.1-20260313 \
+            bash -lc '
+              set -euo pipefail
+              echo "== DDK version =="
+              uname -a
+              clang --version | head -1
+              # Override DDK default kernel release to match F956B target.
+              KDIR="$(make -s -f scripts/Makefile.kernelversion 2>/dev/null && echo linux-6.1.145 || echo /workspace)"
+              # Try common include path patterns.
+              for f in \
+                "/workspace/include/generated/utsrelease.h" \
+                "/workspace/include/config/kernel.release"; do
+                [ -f "$f" ] || continue
+                echo "  patching $f -> 6.1.145-android14-11"
+                sed -i "s/6.1.166-dirty/6.1.145-android14-11/g" "$f" || true
+              done
+              ls -la /workspace/include/generated/ 2>/dev/null | head -5 || true
+              echo "== build kernel headers first =="
+              make -j"$(nproc)" ARCH=arm64 LLVM=1 LLVM_IAS=1 prepare 2>&1 | tail -10 || true
+              echo "== build kernelsu.ko =="
+              cd /workspace/kernel
+              make clean
+              CONFIG_KSU=m \
+              CONFIG_KSU_SAMSUNG_KDP=y \
+              CONFIG_KSU_SAMSUNG_RKP=y \
+              CONFIG_KSU_SAMSUNG_DEFEX=y \
+              CC=clang make -j"$(nproc)" 2>&1 | tail -30
+              ls -la /workspace/kernel/kernelsu.ko 2>&1
+              echo "== verify vermagic =="
+              modinfo /workspace/kernel/kernelsu.ko 2>&1 | grep -E "vermagic|depends"
+              echo "== strip =="
+              llvm-strip -d /workspace/kernel/kernelsu.ko 2>&1
+            '
+
+      - name: copy kernelsu.ko + audit against target ELF
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts-kernel
+          if [ -f /tmp/KernelSU/kernel/kernelsu.ko ]; then
+            cp /tmp/KernelSU/kernel/kernelsu.ko \
+               artifacts-kernel/android14-6.1_kernelsu-q6q-F956BXXS4DZG3-kdp.ko
+            ls -la artifacts-kernel/
+          else
+            echo "WARNING: kernelsu.ko not built; check DDK step logs"
+            exit 1
+          fi
+
+      - name: build ksud userspace (Rust)
+        run: |
+          set -euo pipefail
+          cd /tmp/KernelSU
+          # Copy built KSU module into ksud's expected asset path
+          mkdir -p userspace/ksud/bin/aarch64
+          cp /tmp/KernelSU/kernel/kernelsu.ko \
+             userspace/ksud/bin/aarch64/android14-6.1_kernelsu.ko
+          ls -la userspace/ksud/bin/aarch64/
+          # Configure Rust for aarch64-linux-android
+          NDK_BIN="/opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
+          export PATH="$HOME/.cargo/bin:$NDK_BIN:$PATH"
+          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_BIN/aarch64-linux-android35-clang"
+          export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android35-clang"
+          export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
+          # Build
+          cargo build --release --target aarch64-linux-android -p ksud 2>&1 | tail -30
+          ls -la target/aarch64-linux-android/release/ksud
+
+      - name: copy ksud binary
+        run: |
+          set -euo pipefail
+          mkdir -p artifacts-kernel
+          if [ -f /tmp/KernelSU/target/aarch64-linux-android/release/ksud ]; then
+            cp /tmp/KernelSU/target/aarch64-linux-android/release/ksud \
+               artifacts-kernel/ksud-q6q-F956BXXS4DZG3-kdp
+            chmod +x artifacts-kernel/ksud-q6q-F956BXXS4DZG3-kdp
+            ls -la artifacts-kernel/
+          else
+            echo "WARNING: ksud not built"
+            exit 1
+          fi
+
       - name: collect artifacts + SHA-256
         run: |
           set -euo pipefail
@@ -88,6 +199,10 @@ jobs:
           cp /tmp/payloads/build/q6q-F956BXXS4DZG3/cve-2026-43499-app.so        artifacts/cve-2026-43499-app.debug.so
           cp /tmp/payloads/build/q6q-F956BXXS4DZG3/cve-2026-43499             artifacts/cve-2026-43499
           cp /tmp/payloads/build/q6q-F956BXXS4DZG3/cve-2026-43499-root        artifacts/cve-2026-43499-root
+          # If kernelsu.ko + ksud exist, include them
+          if [ -f artifacts-kernel/android14-6.1_kernelsu-q6q-F956BXXS4DZG3-kdp.ko ]; then
+            cp artifacts-kernel/* artifacts/
+          fi
           cd artifacts
           sha256sum * > SHA256SUMS
           echo "" >> SHA256SUMS
