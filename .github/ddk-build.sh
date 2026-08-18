@@ -36,11 +36,13 @@ if [ ! -f "$KDIR/.config" ]; then
   echo "  copied gki_defconfig"
 fi
 
-# Force CONFIG_KSU=y and Samsung KDP/RKP/DEFEX = y. CONFIG_KSU is
-# tristate with 'default y'; olddefconfig would normalize 'm' to 'y' so we
-# set 'y' directly to keep auto.conf stable.
+# Force CONFIG_KSU=m and Samsung KDP/RKP/DEFEX = y. CONFIG_KSU's
+# 'default y' in the Kconfig means olddefconfig would normalize 'm' to
+# 'y'; we set 'm' anyway and also override KSU's default in its
+# Kconfig file so the obj-$(CONFIG_KSU) += kernelsu/ entry produces a
+# loadable .ko rather than a built-in object.
 for cfg in \
-  "CONFIG_KSU=y" \
+  "CONFIG_KSU=m" \
   "CONFIG_KPROBES=y" \
   "CONFIG_KPROBE_EVENTS=y" \
   "CONFIG_EXT4_FS=y" \
@@ -58,6 +60,11 @@ for cfg in \
     sed -i "s/^${key}=.*/${cfg}/" "$KDIR/.config"
   fi
 done
+# Patch KernelSU Kconfig to default to m so olddefconfig does not
+# override our explicit 'm'. Replace the 'default y' under 'config KSU'
+# with 'default m' (the line immediately follows the 'tristate' line).
+sed -i "s/^\(\s*default\s*\)y\(\s*#.*Enable kernel-level\)/\1m\2/" \
+    "$KDIR/drivers/kernelsu/Kconfig" || true
 
 cd "$KDIR"
 make olddefconfig > /tmp/m1.log 2>&1; echo "olddefconfig rc=$?"
