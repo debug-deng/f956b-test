@@ -94,28 +94,26 @@ jobs:
           echo "patch applied"
 
           # Build inside DDK container. The DDK image bundles a kernel source
-          # tree at KDIR=/opt/ddk/kdir/${ANDROID_VER}. For android14-6.1-20260313,
-          # that's /opt/ddk/kdir/android14-6.1/. The vermagic is 6.1.166-dirty
+          # tree at /opt/ddk/kdir/android14-6.1/. The vermagic is 6.1.166-dirty
           # by default; we sed-override the release string files so the resulting
           # module matches the F956B target (6.1.145-android14-11).
           #
-          # KernelSU source is mounted on top of ${KDIR}/kernel so module-build
-          # commands find our patched sources.
+          # We mount our patched KernelSU source tree on top of the DDK's
+          # /opt/ddk/kdir/android14-6.1/kernel/ directory (the directory
+          # already exists in the image, so the bind mount resolves cleanly).
           docker run --rm \
-            -v "/tmp/KernelSU:/workspace/kernel:rw" \
-            -e KDIR=/opt/ddk/kdir/android14-6.1 \
-            -w /workspace \
+            -v "/tmp/KernelSU/kernel:/opt/ddk/kdir/android14-6.1/kernel:rw" \
+            -w /opt/ddk/kdir/android14-6.1 \
             ghcr.io/ylarod/ddk-min:android14-6.1-20260313 \
             bash -lc '
               set -euo pipefail
               echo "== DDK env =="
               uname -a
               clang --version | head -1
+              KDIR=/opt/ddk/kdir/android14-6.1
               echo "== kernel source layout =="
-              ls -la "$KDIR"
-              ls -la "$KDIR/include/generated/" 2>/dev/null | head -10 || echo "no include/generated yet"
-              echo "== kernel.release =="
-              cat "$KDIR/include/config/kernel.release" 2>/dev/null || echo "no kernel.release yet"
+              ls -la "$KDIR" | head -10
+              ls "$KDIR/kernel" | head -10
               echo "== build modules_prepare to populate include/ =="
               cd "$KDIR"
               make modules_prepare 2>&1 | tail -20
@@ -144,16 +142,16 @@ jobs:
               # KernelSU's kernel/Makefile is a thin shim that invokes
               #   make -C $(KDIR) M=$(ODIR) modules
               # KDIR must point at the already-prepared 6.1 kernel source
-              # tree (we set this above). We cd into /workspace/kernel
-              # INSIDE the container, since that path is the mount of our
-              # patched KernelSU sources.
-              cd /workspace/kernel
+              # tree. We pass KDIR via env var to the Makefile.
+              cd "$KDIR/kernel"
+              pwd
+              ls Kbuild Makefile 2>&1 | head
               KDIR=/opt/ddk/kdir/android14-6.1 make clean 2>&1 | tail -5
               KDIR=/opt/ddk/kdir/android14-6.1 make -j"$(nproc)" 2>&1 | tail -40
 
               echo "== verify kernelsu.ko =="
-              ls -la /workspace/kernel/kernelsu.ko 2>&1
-              modinfo /workspace/kernel/kernelsu.ko 2>&1 | grep -E "vermagic|depends|srcversion"
+              ls -la "$KDIR/kernel/kernelsu.ko" 2>&1
+              modinfo "$KDIR/kernel/kernelsu.ko" 2>&1 | grep -E "vermagic|depends|srcversion"
             '
 
       - name: strip and copy kernelsu.ko
