@@ -1,0 +1,12 @@
+# Odin / Samsung firmware source artifacts (recovered from input AP archive).
+# Kept locally for evidence chain; too large / proprietary for git.
+work/boot.img
+work/boot.img.lz4
+work/meta-data/
+
+# Python cache
+__pycache__/
+*.pyc
+
+# Local tools dir (downloaded vmlinux-to-elf, kept outside work/)
+tools/
