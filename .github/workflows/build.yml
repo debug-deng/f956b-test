@@ -96,10 +96,14 @@ jobs:
         run: |
           set -euo pipefail
           # Pull upstream KernelSU v3.2.5 source + apply Samsung patch.
+          # kernelsu/README.md cites commit b0bc817b4e966aa6aa830834eaf6ef765d821d40
+          # on tiann/KernelSU. A full clone is required because `git checkout`
+          # of a specific SHA needs that commit's parents in history.
           cd /tmp
-          git clone --depth 1 https://github.com/tiann/KernelSU.git
+          git clone https://github.com/tiann/KernelSU.git 2>&1 | tail -3
           cd KernelSU
-          git checkout b0bc817b4e966aa6aa830834eaf6ef765d821d40
+          git checkout b0bc817b4e966aa6aa830834eaf6ef765d821d40 2>&1 | tail -3
+          git log -1 --oneline
           # Apply Samsung KDP/RKP/DEFEX patch
           git apply /tmp/payloads/kernelsu/patches/KernelSU-v3.2.5-samsung-kdp-rkp-defex.patch
           echo "patch applied"
