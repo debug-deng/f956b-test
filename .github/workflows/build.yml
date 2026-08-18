@@ -75,30 +75,15 @@ jobs:
       - name: download Samsung F956B kernel source
         run: |
           set -euo pipefail
-          mkdir -p /tmp/samsung-kernel
-          cd /tmp/samsung-kernel
-          # The user uploads Kernel.tar.gz and Platform.tar.gz to a GitHub
-          # release on debug-deng/f956b-test and the release URL is fixed
-          # below. Update KERNEL_RELEASE_TAG to bump the snapshot.
-          KERNEL_RELEASE_TAG="${KERNEL_RELEASE_TAG:-v1}"
-          BASE="https://github.com/debug-deng/f956b-test/releases/download/${KERNEL_RELEASE_TAG}"
-          for f in Kernel.tar.gz Platform.tar.gz; do
-            if [ -f "$GITHUB_WORKSPACE/work/SM-F956B_16_Opensource/$f" ]; then
-              echo "using local $f"
-              continue
-            fi
-            echo "downloading $f from ${BASE}/$f"
-            wget -q "${BASE}/$f" -O "$f" || {
-              echo "::error::Could not download $f from release ${KERNEL_RELEASE_TAG}."
-              echo "Upload Kernel.tar.gz + Platform.tar.gz to debug-deng/f956b-test release ${KERNEL_RELEASE_TAG},"
-              echo "then re-run this workflow."
-              exit 1
-            }
-          done
-          ls -la *.tar.gz 2>&1
-          tar -xzf Kernel.tar.gz
-          tar -xzf Platform.tar.gz
-          ls /tmp/samsung-kernel | head
+          # NOTE: We don't actually need Kernel.tar.gz/Platform.tar.gz because the
+          # ghcr.io/ylarod/ddk-min:android14-6.1-20260313 image bundles a
+          # matching kernel source tree at /opt/ddk/kdir/android14-6.1 with
+          # vmlinux already built. The fallback to download from a release
+          # is preserved for reproducibility (see KERNEL_SOURCE_NOTE.md).
+          if [ -f "$GITHUB_WORKSPACE/work/SM-F956B_16_Opensource/Kernel.tar.gz" ]; then
+            echo "::notice::Local Kernel.tar.gz present but not used; DDK image KDIR is preferred."
+          fi
+          echo "skipping kernel source download (using DDK image's /opt/ddk/kdir/android14-6.1)"
 
       - name: build kernelsu.ko + ksud via DDK + samsung-main
         run: |
