@@ -105,7 +105,7 @@ jobs:
           #   - /tmp/KernelSU/kernel -> /opt/ddk/kdir/android14-6.1/drivers/kernelsu/
           #     (the directory setup.sh would normally symlink; we do it directly)
           docker run --rm \
-            -v "/tmp/KernelSU/kernel:/opt/ddk/kdir/android14-6.1/drivers/kernelsu:rw" \
+            -v "/tmp/KernelSU/kernel:/opt/ddk/src/android14-6.1/drivers/kernelsu:rw" \
             -w /opt/ddk/kdir/android14-6.1 \
             -e KDIR=/opt/ddk/kdir/android14-6.1 \
             -e ARCH=arm64 \
@@ -126,7 +126,8 @@ jobs:
               echo "KDIR=$KDIR"
               echo "== verify mount and KDIR layout =="
               ls "$KDIR/.config" && echo "  .config present"
-              ls "$KDIR/drivers/kernelsu/" | head -10
+              # The kdir/ tree uses src/ as its source. mount went to src/.
+              ls "$KDIR/../../../src/android14-6.1/drivers/kernelsu/" | head -10
               echo "== modules_prepare =="
               cd "$KDIR"
               make modules_prepare 2>&1 | tail -10
