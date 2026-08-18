@@ -128,6 +128,19 @@ jobs:
               ls "$KDIR/.config" && echo "  .config present"
               # The kdir/ tree uses src/ as its source. mount went to src/.
               ls "/opt/ddk/src/android14-6.1/drivers/kernelsu/" | head -10
+              echo "== patch drivers/Makefile + drivers/Kconfig =="
+              # KernelSU's setup.sh does two extra steps besides the symlink:
+              # it appends 'obj-$(CONFIG_KSU) += kernelsu/' to drivers/Makefile
+              # and 'source "drivers/kernelsu/Kconfig"' to drivers/Kconfig.
+              # Without these, make modules does not even know the module exists.
+              if ! grep -q "obj-\$(CONFIG_KSU)" "$KDIR/drivers/Makefile"; then
+                printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$KDIR/drivers/Makefile"
+                echo "  appended to drivers/Makefile"
+              fi
+              if ! grep -q 'drivers/kernelsu/Kconfig' "$KDIR/drivers/Kconfig"; then
+                sed -i '/endmenu/i\source "drivers/kernelsu/Kconfig"' "$KDIR/drivers/Kconfig"
+                echo "  appended to drivers/Kconfig"
+              fi
               echo "== check .config for KSU =="
               grep -E "^CONFIG_(KSU|KPROBES|EXT4_FS|MODULES|ARM64)=" "$KDIR/.config" | head -10
               echo "== ensure CONFIG_KSU=m + dependencies in .config =="
@@ -161,6 +174,9 @@ jobs:
               echo "== modules_prepare =="
               cd "$KDIR"
               make modules_prepare 2>&1 | tail -10
+              echo "== verify auto.conf has CONFIG_KSU after modules_prepare =="
+              grep -E "^CONFIG_KSU" include/config/auto.conf 2>&1 || echo "  auto.conf missing CONFIG_KSU"
+              grep -E "^CONFIG_(KSU_SAMSUNG|KPROBES)" include/config/auto.conf 2>&1 | head -3
               echo "== override vermagic to 6.1.145-android14-11 =="
               sed -i "s/6.1.166-dirty/6.1.145-android14-11/g" \
                   "$KDIR/include/config/kernel.release" 2>/dev/null || true
