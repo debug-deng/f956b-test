@@ -154,8 +154,10 @@ jobs:
                 echo "  copied gki_defconfig -> .config"
               fi
 
-              # Force CONFIG_KSU=m and Samsung KDP/RKP/DEFEX = y.
-              for cfg in                 "CONFIG_KSU=m"                 "CONFIG_KPROBES=y"                 "CONFIG_KPROBE_EVENTS=y"                 "CONFIG_EXT4_FS=y"                 "CONFIG_EXT4_FS_POSIX_ACL=y"                 "CONFIG_EXT4_FS_SECURITY=y"                 "CONFIG_SECURITY=y"                 "CONFIG_MODULES=y"                 "CONFIG_MODULE_UNLOAD=y"                 "CONFIG_KSU_SAMSUNG_KDP=y"                 "CONFIG_KSU_SAMSUNG_RKP=y"                 "CONFIG_KSU_SAMSUNG_DEFEX=y"; do
+              # Force CONFIG_KSU=y and Samsung KDP/RKP/DEFEX = y.
+              # CONFIG_KSU is tristate with default y; olddefconfig normalizes
+              # CONFIG_KSU=m to CONFIG_KSU=y anyway, so we set y directly.
+              for cfg in                 "CONFIG_KSU=y"                 "CONFIG_KPROBES=y"                 "CONFIG_KPROBE_EVENTS=y"                 "CONFIG_EXT4_FS=y"                 "CONFIG_EXT4_FS_POSIX_ACL=y"                 "CONFIG_EXT4_FS_SECURITY=y"                 "CONFIG_SECURITY=y"                 "CONFIG_MODULES=y"                 "CONFIG_MODULE_UNLOAD=y"                 "CONFIG_KSU_SAMSUNG_KDP=y"                 "CONFIG_KSU_SAMSUNG_RKP=y"                 "CONFIG_KSU_SAMSUNG_DEFEX=y"; do
                 key="${cfg%%=*}"
                 cur="$(grep -E "^${key}=" "$KDIR/.config" 2>/dev/null || echo "${key}=n")"
                 if [ "$cur" != "$cfg" ]; then
