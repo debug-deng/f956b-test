@@ -165,6 +165,11 @@ jobs:
 
               echo "== modules_prepare =="
               cd "$KDIR"
+              # olddefconfig first to materialize include/config/auto.conf
+              # with CONFIG_KSU=m; without this, make modules silently skips
+              # drivers/kernelsu/ even though obj-$(CONFIG_KSU) is set.
+              make olddefconfig 2>&1 | tail -5
+              grep -E "^CONFIG_KSU\b" include/config/auto.conf || echo "WARN: auto.conf missing CONFIG_KSU"
               make modules_prepare 2>&1 | tail -5
 
               echo "== build kernelsu.ko =="
