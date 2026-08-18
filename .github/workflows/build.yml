@@ -133,8 +133,11 @@ jobs:
               # it appends 'obj-$(CONFIG_KSU) += kernelsu/' to drivers/Makefile
               # and 'source "drivers/kernelsu/Kconfig"' to drivers/Kconfig.
               # Without these, make modules does not even know the module exists.
-              if ! grep -q "obj-\$(CONFIG_KSU)" "$KDIR/drivers/Makefile"; then
-                printf '\nobj-$(CONFIG_KSU) += kernelsu/\n' >> "$KDIR/drivers/Makefile"
+              # Use a single-line echo (printf with multi-line escapes has caused
+              # issues when the script is parsed through YAML+bash -c).
+              if ! grep -q 'obj-$(CONFIG_KSU)' "$KDIR/drivers/Makefile"; then
+                echo "" >> "$KDIR/drivers/Makefile"
+                echo 'obj-$(CONFIG_KSU) += kernelsu/' >> "$KDIR/drivers/Makefile"
                 echo "  appended to drivers/Makefile"
               fi
               if ! grep -q 'drivers/kernelsu/Kconfig' "$KDIR/drivers/Kconfig"; then
