@@ -176,7 +176,14 @@ jobs:
 
               echo "== build kernelsu.ko =="
               cd "$KDIR"
-              make M=drivers/kernelsu modules -j"$(nproc)" 2>&1 | tail -30
+              # Save full log to /tmp/build.log so we can grep it for errors
+              # without losing early lines to 'tail'.
+              make M=drivers/kernelsu modules -j"$(nproc)" > /tmp/build.log 2>&1
+              echo "tail of full log:"
+              tail -40 /tmp/build.log
+              echo ""
+              echo "errors / warnings:"
+              grep -iE "error|warning:|undefined" /tmp/build.log | head -10 || echo "  none"
 
               echo "== build artifacts =="
               find drivers/kernelsu/ -maxdepth 2 -type f 2>&1 | head -20
