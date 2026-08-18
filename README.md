@@ -173,3 +173,4 @@ expected — the upstream README notes "S9280 vs S928U1 only `kmalloc_caches`
 differs"; here we have a full q6q vs e3q platform delta, but the *number* of
 differing offsets is small enough that the upstream framework's per-target
 template absorbs the variance cleanly.
+
