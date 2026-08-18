@@ -116,11 +116,23 @@ jobs:
           # Samsung open-source kernel source (downloaded from release v1)
           # at /kernel_src inside the DDK image, then mount our patched
           # KernelSU sources on top of drivers/kernelsu/.
-          docker run --rm             -v "/tmp/samsung-kernel/kernel_platform/msm-kernel:/kernel_src:rw"             -v "/tmp/KernelSU/kernel:/kernel_src/drivers/kernelsu:rw"             -v "${{ github.workspace }}/.github/ddk-build.sh:/tmp/ddk-build.sh:ro"             -w /kernel_src             -e KDIR=/kernel_src             -e ARCH=arm64             -e CROSS_COMPILE=aarch64-linux-gnu-             -e LLVM=1             -e LLVM_IAS=1             ghcr.io/ylarod/ddk-min:android14-6.1-20260313             bash /tmp/ddk-build.sh 2>&1 | tee /tmp/ddk_build_full.log | tail -100
-          echo "=== full log line count ==="
-          wc -l /tmp/ddk_build_full.log
-          echo "=== errors in full log ==="
-          grep -iE "error|undefined" /tmp/ddk_build_full.log | head -10 || echo "  no errors"
+          docker run --rm \
+            -v "/tmp/samsung-kernel/kernel_platform/msm-kernel:/kernel_src:rw" \
+            -v "/tmp/KernelSU/kernel:/kernel_src/drivers/kernelsu:rw" \
+            -v "${{ github.workspace }}/.github/ddk-build.sh:/tmp/ddk-build.sh:ro" \
+            -w /kernel_src \
+            -e KDIR=/kernel_src \
+            -e ARCH=arm64 \
+            -e CROSS_COMPILE=aarch64-linux-gnu- \
+            -e LLVM=1 \
+            -e LLVM_IAS=1 \
+            ghcr.io/ylarod/ddk-min:android14-6.1-20260313 \
+            bash /tmp/ddk-build.sh
+          echo "== tail of full log (last 80 lines) =="
+          tail -80 /tmp/ddk_build.log
+          echo "== log size: $(wc -c < /tmp/ddk_build.log) bytes =="
+          echo "== errors in full log =="
+          grep -iE "error|undefined" /tmp/ddk_build.log | head -10 || echo "  no errors"
 
       - name: strip and copy kernelsu.ko
         run: |
