@@ -9,6 +9,7 @@ on:
       - 'work/vmlinux.elf'
       - 'work/vmlinux.btf'
       - '.github/workflows/build.yml'
+      - '.github/ddk-build.sh'
   workflow_dispatch:
 
 jobs:
