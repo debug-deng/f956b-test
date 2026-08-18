@@ -141,15 +141,18 @@ jobs:
               cat "$KDIR/include/generated/utsrelease.h"
 
               echo "== build kernelsu.ko via KernelSU Makefile =="
-              # KernelSU's kernel/Makefile is a thin shim that calls
-              # `make -C $(KDIR) M=$(ODIR) modules`. KDIR must point at the
-              # already-prepared 6.1 kernel source tree (we set this above).
+              # KernelSU's kernel/Makefile is a thin shim that invokes
+              #   make -C $(KDIR) M=$(ODIR) modules
+              # KDIR must point at the already-prepared 6.1 kernel source
+              # tree (we set this above). We cd into /workspace/kernel
+              # INSIDE the container, since that path is the mount of our
+              # patched KernelSU sources.
               cd /workspace/kernel
-              make clean
-              KDIR="$KDIR" make -j"$(nproc)" 2>&1 | tail -40
+              KDIR=/opt/ddk/kdir/android14-6.1 make clean 2>&1 | tail -5
+              KDIR=/opt/ddk/kdir/android14-6.1 make -j"$(nproc)" 2>&1 | tail -40
 
               echo "== verify kernelsu.ko =="
-              ls -la /workspace/kernel/kernelsu.ko
+              ls -la /workspace/kernel/kernelsu.ko 2>&1
               modinfo /workspace/kernel/kernelsu.ko 2>&1 | grep -E "vermagic|depends|srcversion"
             '
 
