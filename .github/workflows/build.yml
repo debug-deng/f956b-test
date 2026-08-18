@@ -69,18 +69,18 @@ jobs:
       - name: build cve-2026-43499-app.so (release)
         run: |
           set -euo pipefail
-          cd /tmp/build
+          # upstream Makefile lives at the root of src/, not in /tmp/build.
+          # Makefile uses TARGET_CC := $(ANDROID_NDK_HOME)/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android$(API)-clang
+          # so ANDROID_NDK_HOME must point to the unpacked NDK root.
+          cd /tmp/build/src
           export ANDROID_NDK_HOME=/opt/ndk
           export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
-          # Upstream Makefile uses API ?= 35. android35 means target Android 15 SDK.
-          # Porting.md Section 2 Section 4 says P0 kernel image loads at PHYS 0x80000000.
-          # We use release target which produces APP_RELEASE with -Oz + --gc-sections.
           make TARGET=q6q-F956BXXS4DZG3 release 2>&1 | tail -40
 
       - name: build cve-2026-43499 (preload)
         run: |
           set -euo pipefail
-          cd /tmp/build
+          cd /tmp/build/src
           export ANDROID_NDK_HOME=/opt/ndk
           export PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin:$PATH"
           make TARGET=q6q-F956BXXS4DZG3 2>&1 | tail -40
