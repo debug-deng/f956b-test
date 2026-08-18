@@ -142,7 +142,10 @@ jobs:
                 > "$KDIR/include/generated/utsrelease.h"
               cat "$KDIR/include/config/kernel.release"
               echo "== build kernelsu.ko in-tree via M=drivers/kernelsu =="
-              make M=drivers/kernelsu modules -j"$(nproc)" 2>&1 | tail -25
+              make M=drivers/kernelsu modules -j"$(nproc)" 2>&1
+              echo "== EXPLICIT LIST OF BUILD ARTIFACTS =="
+              find drivers/kernelsu/ -maxdepth 2 -type f -ls 2>&1 | head -30
+
               echo "== verify kernelsu.ko =="
               ls -la drivers/kernelsu/kernelsu.ko 2>&1
               modinfo drivers/kernelsu/kernelsu.ko 2>&1 | grep -E "vermagic|depends|srcversion"
