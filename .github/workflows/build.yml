@@ -122,27 +122,33 @@ jobs:
               ls "$KDIR/include/generated/" | head -10
 
               echo "== override vermagic to 6.1.145-android14-11 =="
-              for f in "$KDIR/include/generated/utsrelease.h" \
-                       "$KDIR/include/config/kernel.release"; do
-                if [ -f "$f" ]; then
-                  sed -i "s/6.1.166-dirty/6.1.145-android14-11/g" "$f"
-                fi
-              done
+              # First override kernel.release (no generation conflict).
+              if [ -f "$KDIR/include/config/kernel.release" ]; then
+                sed -i "s/6.1.166-dirty/6.1.145-android14-11/g" \
+                    "$KDIR/include/config/kernel.release"
+                sed -i "s/6.1.166/6.1.145-android14-11/g" \
+                    "$KDIR/include/config/kernel.release"
+              fi
+              # Second: force-override utsrelease.h after modules_prepare.
+              cat > "$KDIR/include/generated/utsrelease.h" <<'UTS'
+#define UTS_RELEASE "6.1.145-android14-11"
+#define VERMAGIC_STRING "6.1.145-android14-11 SMP preempt mod_unload modversions aarch64"
+#define VERMAGIC_INCLUDE_STR "6.1.145-android14-11"
+UTS
               cat "$KDIR/include/config/kernel.release"
-              grep UTS_RELEASE "$KDIR/include/generated/utsrelease.h"
+              cat "$KDIR/include/generated/utsrelease.h"
 
-              echo "== build kernelsu.ko =="
-              cd "$KDIR/kernel"
+              echo "== build kernelsu.ko via KernelSU Makefile =="
+              # KernelSU's kernel/Makefile is a thin shim that calls
+              # `make -C $(KDIR) M=$(ODIR) modules`. KDIR must point at the
+              # already-prepared 6.1 kernel source tree (we set this above).
+              cd /workspace/kernel
               make clean
-              CONFIG_KSU=m \
-              CONFIG_KSU_SAMSUNG_KDP=y \
-              CONFIG_KSU_SAMSUNG_RKP=y \
-              CONFIG_KSU_SAMSUNG_DEFEX=y \
-              CC=clang make -j"$(nproc)" 2>&1 | tail -40
+              KDIR="$KDIR" make -j"$(nproc)" 2>&1 | tail -40
 
               echo "== verify kernelsu.ko =="
-              ls -la "$KDIR/kernel/kernelsu.ko"
-              modinfo "$KDIR/kernel/kernelsu.ko" 2>&1 | grep -E "vermagic|depends|srcversion"
+              ls -la /workspace/kernel/kernelsu.ko
+              modinfo /workspace/kernel/kernelsu.ko 2>&1 | grep -E "vermagic|depends|srcversion"
             '
 
       - name: strip and copy kernelsu.ko
