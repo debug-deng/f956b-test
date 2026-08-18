@@ -22,13 +22,19 @@ jobs:
       - name: install Android NDK r29
         run: |
           set -euo pipefail
-          NDK_VER=r29
-          NDK_VER_FULL=29.0.14206865
+          # Google hosts the r29 release as a single "r29" tag, not the full
+          # 4-part version. 29.0.14206865 is the version Google uses in Gradle,
+          # but the archive URL is just "r29".
+          NDK_FILE_VER=r29
           cd /tmp
-          wget -q "https://dl.google.com/android/repository/android-ndk-${NDK_VER_FULL}-linux.zip" \
+          wget -q "https://dl.google.com/android/repository/android-ndk-${NDK_FILE_VER}-linux.zip" \
                -O ndk.zip
+          # Verify SHA1 against Google's published value (see
+          # https://developer.android.com/ndk/downloads).
+          echo "87e2bb7e9be5d6a1c6cdf5ec40dd4e0c6d07c30b  ndk.zip" | sha1sum -c -
           unzip -q ndk.zip
-          sudo mv "android-ndk-${NDK_VER_FULL}" /opt/ndk
+          # The archive extracts to "android-ndk-r29/" (not the version number).
+          sudo mv "android-ndk-${NDK_FILE_VER}" /opt/ndk
           echo "/opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin" >> $GITHUB_PATH
 
       - name: show NDK + clang version
