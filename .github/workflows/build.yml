@@ -129,19 +129,35 @@ jobs:
               # The kdir/ tree uses src/ as its source. mount went to src/.
               ls "/opt/ddk/src/android14-6.1/drivers/kernelsu/" | head -10
               echo "== check .config for KSU =="
-              grep -E "^CONFIG_(KSU|MODULES|ARM64)=" "$KDIR/.config" | head -10
-              echo "== ensure CONFIG_KSU=m in .config (build any kernel module needs this) =="
-              if ! grep -qE "^CONFIG_KSU=" "$KDIR/.config"; then
-                echo "CONFIG_KSU=m" >> "$KDIR/.config"
-                echo "added CONFIG_KSU=m"
-              fi
-              if ! grep -qE "^CONFIG_MODULES=" "$KDIR/.config"; then
-                echo "CONFIG_MODULES=y" >> "$KDIR/.config"
-                echo "added CONFIG_MODULES=y"
-              fi
-              # Re-run oldconfig to make sure the .config is consistent
+              grep -E "^CONFIG_(KSU|KPROBES|EXT4_FS|MODULES|ARM64)=" "$KDIR/.config" | head -10
+              echo "== ensure CONFIG_KSU=m + dependencies in .config =="
+              # KernelSU Kconfig says: depends on KPROBES && EXT4_FS, default y
+              # We need to force CONFIG_KSU=m so 'make modules' builds it
+              # as a loadable .ko rather than a builtin.
+              for cfg in \
+                "CONFIG_KSU=m" \
+                "CONFIG_KPROBES=y" \
+                "CONFIG_KPROBE_EVENTS=y" \
+                "CONFIG_EXT4_FS=y" \
+                "CONFIG_EXT4_FS_POSIX_ACL=y" \
+                "CONFIG_EXT4_FS_SECURITY=y" \
+                "CONFIG_SECURITY=y" \
+                "CONFIG_MODULES=y" \
+                "CONFIG_MODULE_UNLOAD=y" \
+                "CONFIG_KSU_SAMSUNG_KDP=y" \
+                "CONFIG_KSU_SAMSUNG_RKP=y" \
+                "CONFIG_KSU_SAMSUNG_DEFEX=y"; do
+                key="${cfg%%=*}"
+                cur="$(grep -E "^${key}=" "$KDIR/.config" || echo "${key}=n")"
+                if [ "$cur" != "$cfg" ]; then
+                  sed -i "s/^${key}=.*/${cfg}/" "$KDIR/.config"
+                  echo "  $cur -> $cfg"
+                fi
+              done
+              echo "== post-update grep =="
+              grep -E "^CONFIG_(KSU|KPROBES|EXT4_FS|MODULES|KSU_SAMSUNG)=" "$KDIR/.config"
+              # Re-run olddefconfig to make sure the .config is consistent
               make olddefconfig 2>&1 | tail -5
-              grep -E "^CONFIG_(KSU|MODULES)=" "$KDIR/.config" | head -3
               echo "== modules_prepare =="
               cd "$KDIR"
               make modules_prepare 2>&1 | tail -10
