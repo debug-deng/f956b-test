@@ -8,8 +8,8 @@ on:
       - 'work/p0_fingerprint.h'
       - 'work/vmlinux.elf'
       - 'work/vmlinux.btf'
+      - 'kernelsu/**'
       - '.github/workflows/build.yml'
-      - '.github/ddk-build.sh'
   workflow_dispatch:
 
 jobs:
@@ -72,157 +72,25 @@ jobs:
           SIZE=$(stat -c %s "$APP_REL")
           echo "release.so size: $SIZE (limit 104128)"
 
-      - name: download Samsung F956B kernel source from release v1
+      - name: verify KSU module vermagic matches device
         run: |
           set -euo pipefail
-          # The build needs the Samsung open-source kernel archive (Kernel.tar.gz)
-          # that matches F956BXXS4DZG3. We cannot commit 640MB to git, so
-          # publish it as a release asset on debug-deng/f956b-test and pull
-          # it here. See KERNEL_SOURCE_NOTE.md for how the release is set up.
-          KERNEL_RELEASE_TAG="${KERNEL_RELEASE_TAG:-v1}"
-          BASE="https://github.com/debug-deng/f956b-test/releases/download/${KERNEL_RELEASE_TAG}"
-          mkdir -p /tmp/samsung-kernel
-          cd /tmp/samsung-kernel
-          for f in Kernel.tar.gz Platform.tar.gz; do
-            echo "downloading ${BASE}/$f"
-            if ! wget -q --tries=3 "${BASE}/$f" -O "$f"; then
-              echo "::error::Could not download $f from release ${KERNEL_RELEASE_TAG}."
-              echo "Upload Kernel.tar.gz + Platform.tar.gz to debug-deng/f956b-test release ${KERNEL_RELEASE_TAG},"
-              echo "then re-run this workflow."
-              exit 1
-            fi
-            echo "  $f: $(stat -c %s $f) bytes"
-          done
-          tar -xzf Kernel.tar.gz
-          tar -xzf Platform.tar.gz
-          echo "extracted layout:"
-          ls /tmp/samsung-kernel/kernel_platform/msm-kernel/ | head -5
-          test -f /tmp/samsung-kernel/kernel_platform/msm-kernel/Makefile || {
-            echo "ERROR: Kernel.tar.gz extract did not produce msm-kernel/Makefile"
-            exit 1
-          }
-          grep -E "^VERSION|^PATCHLEVEL|^SUBLEVEL" /tmp/samsung-kernel/kernel_platform/msm-kernel/Makefile | head -3
-
-      - name: build kernelsu.ko via DDK + samsung-main
-        run: |
-          set -euo pipefail
-          cd /tmp
-          git clone --depth 1 -b samsung-main https://github.com/tiann/KernelSU.git 2>&1 | tail -3
-          cd KernelSU
-          git log -1 --oneline
-          ls kernel/ | head -5
-
-          # Run the DDK build script that lives in this repo. We mount the
-          # Samsung open-source kernel source (downloaded from release v1)
-          # at /kernel_src inside the DDK image, then mount our patched
-          # KernelSU sources on top of drivers/kernelsu/.
-          docker run --rm \
-            -v "/tmp/samsung-kernel/kernel_platform/msm-kernel:/kernel_src:rw" \
-            -v "/tmp/KernelSU/kernel:/kernel_src/drivers/kernelsu:rw" \
-            -v "${{ github.workspace }}/.github/ddk-build.sh:/tmp/ddk-build.sh:ro" \
-            -w /kernel_src \
-            -e KDIR=/kernel_src \
-            -e ARCH=arm64 \
-            -e CROSS_COMPILE=aarch64-linux-gnu- \
-            -e LLVM=1 \
-            -e LLVM_IAS=1 \
-            ghcr.io/ylarod/ddk-min:android14-6.1-20260313 \
-            bash /tmp/ddk-build.sh
-          echo "== tail of full log (last 80 lines) =="
-          tail -80 /tmp/ddk_build.log
-          echo "== log size: $(wc -c < /tmp/ddk_build.log) bytes =="
-          echo "== errors in full log =="
-          grep -iE "error|undefined" /tmp/ddk_build.log | head -10 || echo "  no errors"
-
-      - name: strip and copy kernelsu.ko
-        run: |
-          set -euo pipefail
-          mkdir -p artifacts-kernel
-          docker run --rm \
-            -v "/tmp/samsung-kernel/kernel_platform/msm-kernel:/kernel_src:rw" \
-            -v "/tmp/KernelSU/kernel:/kernel_src/drivers/kernelsu:rw" \
-            -v "$PWD/artifacts-kernel:/out:rw" \
-            ghcr.io/ylarod/ddk-min:android14-6.1-20260313 \
-            bash -c '
-              set -euo pipefail
-              KO=/kernel_src/drivers/kernelsu/kernelsu.ko
-              if [ ! -f "$KO" ]; then
-                echo "ERROR: kernelsu.ko not found at $KO"
-                find /kernel_src/drivers/kernelsu -name "*.ko" 2>/dev/null
-                exit 1
-              fi
-              /opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-strip -d "$KO" 2>/dev/null || \
-                echo "  warning: no llvm-strip available, leaving symbols in"
-              cp "$KO" /out/android14-6.1_kernelsu-q6q-F956BXXS4DZG3-kdp.ko
-              ls -la /out/
-            '
-          ls -la artifacts-kernel/
-
-      - name: build ksud userspace (Rust)
-        run: |
-          set -euo pipefail
-          cd /tmp/KernelSU
-          docker run --rm \
-            -v "/tmp/samsung-kernel/kernel_platform/msm-kernel:/kernel_src:rw" \
-            -v "/tmp/KernelSU/kernel:/kernel_src/drivers/kernelsu:rw" \
-            -v "$PWD:/work:rw" \
-            ghcr.io/ylarod/ddk-min:android14-6.1-20260313 \
-            bash -c '
-              set -euo pipefail
-              if [ -f /kernel_src/drivers/kernelsu/kernelsu.ko ]; then
-                cp /kernel_src/drivers/kernelsu/kernelsu.ko /work/kernelsu.ko
-                echo "copied kernelsu.ko"
-              else
-                echo "ERROR: kernelsu.ko missing in container"
-                find /kernel_src -name "kernelsu.ko" 2>/dev/null
-                exit 1
-              fi
-            '
-          mkdir -p userspace/ksud/bin/aarch64
-          cp kernelsu.ko userspace/ksud/bin/aarch64/android14-6.1_kernelsu.ko
-          ls -la userspace/ksud/bin/aarch64/
           NDK_BIN="/opt/ndk/toolchains/llvm/prebuilt/linux-x86_64/bin"
-          export PATH="$HOME/.cargo/bin:$NDK_BIN:$PATH"
-          export CARGO_TARGET_AARCH64_LINUX_ANDROID_LINKER="$NDK_BIN/aarch64-linux-android35-clang"
-          export CC_aarch64_linux_android="$NDK_BIN/aarch64-linux-android35-clang"
-          export AR_aarch64_linux_android="$NDK_BIN/llvm-ar"
-          cargo build --release --target aarch64-linux-android -p ksud 2>&1 | tail -20
-
-      - name: copy ksud binary
-        run: |
-          set -euo pipefail
-          if [ -f /tmp/KernelSU/target/aarch64-linux-android/release/ksud ]; then
-            cp /tmp/KernelSU/target/aarch64-linux-android/release/ksud \
-               artifacts-kernel/ksud-q6q-F956BXXS4DZG3-kdp
-            chmod +x artifacts-kernel/ksud-q6q-F956BXXS4DZG3-kdp
-            ls -la artifacts-kernel/
-          else
-            echo "ERROR: ksud not built"
-            exit 1
-          fi
-
-      - name: upload debug log on failure
-        if: failure()
-        run: |
-          # /tmp/ddk_build_full.log is created by the DDK step when the
-          # build fails. Upload it as an artifact so we can inspect the
-          # actual error offline (the new token does not have actions:read
-          # scope, so we cannot read GitHub step logs via the API).
-          mkdir -p debug-logs
-          if [ -f /tmp/ddk_build_full.log ]; then
-            cp /tmp/ddk_build_full.log debug-logs/ddk_build_full.log
-          else
-            echo "/tmp/ddk_build_full.log not present" > debug-logs/README.txt
-          fi
-          ls -la debug-logs/
-
-      - name: upload debug logs
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: f956b-debug-logs
-          path: debug-logs/
-          if-no-files-found: ignore
+          KO="kernelsu/kernelsu-android14-6.1-F956BXXS4DZG3-samsung-main-no-patch-text-kdp.ko"
+          test -f "$KO" || { echo "ERROR: $KO missing"; exit 1; }
+          $NDK_BIN/llvm-objcopy --dump-section .modinfo=/tmp/modinfo.dump "$KO"
+          VERMAGIC=$($NDK_BIN/llvm-strings /tmp/modinfo.dump | grep -E '^vermagic=' | cut -d= -f2-)
+          echo "  vermagic: $VERMAGIC"
+          case "$VERMAGIC" in
+            "6.1.145-android14-11-33418572-abF956BXXS4DZG3 "*)
+              echo "  vermagic matches F956BXXS4DZG3"
+              ;;
+            *)
+              echo "ERROR: vermagic does not match F956BXXS4DZG3"
+              exit 1
+              ;;
+          esac
+          ls -la "$KO"
 
       - name: collect artifacts + SHA-256
         run: |
@@ -232,14 +100,17 @@ jobs:
           cp /tmp/payloads/build/q6q-F956BXXS4DZG3/cve-2026-43499-app.so        artifacts/cve-2026-43499-app.debug.so
           cp /tmp/payloads/build/q6q-F956BXXS4DZG3/cve-2026-43499             artifacts/cve-2026-43499
           cp /tmp/payloads/build/q6q-F956BXXS4DZG3/cve-2026-43499-root        artifacts/cve-2026-43499-root
-          if [ -f artifacts-kernel/android14-6.1_kernelsu-q6q-F956BXXS4DZG3-kdp.ko ]; then
-            cp artifacts-kernel/* artifacts/
-          fi
+          # KSU module + ksud (prebuilt, vermagic-validated)
+          cp kernelsu/kernelsu-android14-6.1-F956BXXS4DZG3-samsung-main-no-patch-text-kdp.ko \
+             artifacts/android14-6.1_kernelsu-q6q-F956BXXS4DZG3-kdp.ko
+          cp kernelsu/ksud-zfold6-F956BXXS4DZG3-samsung-main-no-patch-text-kdp \
+             artifacts/ksud-q6q-F956BXXS4DZG3-kdp
+          chmod +x artifacts/ksud-q6q-F956BXXS4DZG3-kdp
           cd artifacts
           sha256sum * > SHA256SUMS
           echo "" >> SHA256SUMS
           echo "## source artifacts" >> SHA256SUMS
-          (cd .. && sha256sum work/target.h work/p0_fingerprint.h) >> SHA256SUMS
+          (cd .. && sha256sum work/target.h work/p0_fingerprint.h kernelsu/*.ko kernelsu/ksud*) >> SHA256SUMS
           cat SHA256SUMS
 
       - name: upload artifacts
@@ -264,6 +135,7 @@ jobs:
               echo "| $(basename $f) | $sz | \`$sha\` |"
             done
             echo
+            echo "**KSU module**: prebuilt (vermagic = 6.1.145-android14-11-33418572-abF956BXXS4DZG3). See kernelsu/ in the repo for sources."
             echo "**WARNING**: \`p0_fingerprint.h\` has 31 placeholder entries duplicated from slide=0."
             echo "Only the slide=0 entry contains real kernel-image data."
           } >> "$GITHUB_STEP_SUMMARY"
