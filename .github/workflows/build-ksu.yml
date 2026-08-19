@@ -1,0 +1,245 @@
+name: Build F956B KernelSU (ko + ksud)
+
+# Builds kernelsu.ko + ksud for SM-F956B on 6.1.145-android14-11.
+# Adapted from debug-deng/KernelSU .github/workflows/samsung-main-build.yml
+# (run 31957102752) which produced the verified F956B artifacts.
+#
+# Key facts learned from that run:
+#  - The DDK image (ghcr.io/ylarod/ddk-min:android14-6.1-*) carries a
+#    prepared kernel tree at KDIR=/usr/src/kernel. No modules_prepare,
+#    no Samsung source extraction, no .config editing is needed.
+#  - CONFIG_KSU=m and the Samsung toggles are passed directly as make
+#    command-line variables, not written to .config.
+#  - Vermagic is forced by rewriting include/generated/utsrelease.h and
+#    include/config/kernel.release inside the container to the exact
+#    device uname string.
+#  - --privileged + KBUILD_MODPOST_WARN=1 keep modpost non-fatal.
+#  - ksud is built on plain ubuntu-latest with rustup + NDK r29
+#    (nttld/setup-ndk@v1) and the F956B .ko embedded at
+#    userspace/ksud/bin/aarch64/android14-6.1_kernelsu.ko.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ddk_release:
+        description: 'DDK release tag (e.g. 20260313)'
+        required: false
+        default: '20260313'
+        type: string
+      target_utsrelease:
+        description: 'Target uname -r string (forced into utsrelease.h)'
+        required: false
+        default: '6.1.145-android14-11-33418572-abF956BXXS4DZG3'
+        type: string
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-ksu.yml'
+
+permissions:
+  contents: read
+
+env:
+  KMI: android14-6.1
+  FIRMWARE: F956BXXS4DZG3
+  TARGET_UTSRELEASE: ${{ inputs.target_utsrelease || '6.1.145-android14-11-33418572-abF956BXXS4DZG3' }}
+  # Samsung toggles -- all required on 6.1 Samsung QSEE/KDP devices.
+  CONFIG_KSU: m
+  CONFIG_KSU_SAMSUNG_KDP: y
+  CONFIG_KSU_SAMSUNG_RKP: y
+  CONFIG_KSU_SAMSUNG_DEFEX: y
+  CONFIG_KSU_SAMSUNG_NO_PATCH_TEXT: y
+
+jobs:
+  build-ko:
+    name: Build kernelsu.ko (DDK container)
+    runs-on: ubuntu-latest
+    env:
+      DDK_IMAGE: ghcr.io/ylarod/ddk-min:android14-6.1-${{ inputs.ddk_release || '20260313' }}
+
+    steps:
+      - name: Checkout this repo
+        uses: actions/checkout@v4
+
+      - name: Clone KernelSU (samsung-main branch)
+        run: |
+          set -euo pipefail
+          git clone --depth 1 -b samsung-main \
+            https://github.com/tiann/KernelSU.git /tmp/KernelSU
+          git -C /tmp/KernelSU log -1 --oneline
+          ls /tmp/KernelSU/kernel/ | head -5
+
+      - name: Pull DDK image with retries
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            echo "Pull attempt ${attempt}/5: ${DDK_IMAGE}"
+            if docker pull "${DDK_IMAGE}"; then
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "Unable to pull DDK image after 5 attempts"
+          exit 1
+
+      - name: Build kernelsu.ko in DDK container
+        run: |
+          set -euo pipefail
+          docker run --rm --privileged \
+            -e TARGET_UTSRELEASE="${TARGET_UTSRELEASE}" \
+            -e CONFIG_KSU="${CONFIG_KSU}" \
+            -e CONFIG_KSU_SAMSUNG_KDP="${CONFIG_KSU_SAMSUNG_KDP}" \
+            -e CONFIG_KSU_SAMSUNG_RKP="${CONFIG_KSU_SAMSUNG_RKP}" \
+            -e CONFIG_KSU_SAMSUNG_DEFEX="${CONFIG_KSU_SAMSUNG_DEFEX}" \
+            -e CONFIG_KSU_SAMSUNG_NO_PATCH_TEXT="${CONFIG_KSU_SAMSUNG_NO_PATCH_TEXT}" \
+            -v "/tmp/KernelSU:/workspace" -w /workspace/kernel \
+            "${DDK_IMAGE}" bash -lc '
+              set -euo pipefail
+              KDIR="${KDIR:-/usr/src/kernel}"
+              echo "KDIR=${KDIR}"
+              test -f "${KDIR}/include/generated/utsrelease.h"
+              sed -i "s|^#define UTS_RELEASE .*|#define UTS_RELEASE \"${TARGET_UTSRELEASE}\"|" \
+                "${KDIR}/include/generated/utsrelease.h"
+              grep -q UTS_RELEASE "${KDIR}/include/generated/utsrelease.h" || \
+                printf "%s\\n" "#define UTS_RELEASE \"${TARGET_UTSRELEASE}\"" >> "${KDIR}/include/generated/utsrelease.h"
+              echo "${TARGET_UTSRELEASE}" > "${KDIR}/include/config/kernel.release"
+              make -C "${KDIR}" M="${PWD}" src="${PWD}" modules -j"$(nproc)" \
+                CONFIG_KSU="${CONFIG_KSU}" \
+                CONFIG_KSU_SAMSUNG_KDP="${CONFIG_KSU_SAMSUNG_KDP}" \
+                CONFIG_KSU_SAMSUNG_RKP="${CONFIG_KSU_SAMSUNG_RKP}" \
+                CONFIG_KSU_SAMSUNG_DEFEX="${CONFIG_KSU_SAMSUNG_DEFEX}" \
+                CONFIG_KSU_SAMSUNG_NO_PATCH_TEXT="${CONFIG_KSU_SAMSUNG_NO_PATCH_TEXT}" \
+                CC=clang KBUILD_MODPOST_WARN=1
+              modinfo kernelsu.ko || true
+              VERMAGIC=$(modinfo -F vermagic kernelsu.ko)
+              echo "vermagic: ${VERMAGIC}"
+              echo "${VERMAGIC}" | grep -q "${TARGET_UTSRELEASE}"
+              llvm-strip -d kernelsu.ko
+              ls -la kernelsu.ko
+            '
+
+      - name: Upload kernelsu.ko artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernelsu-ko-${{ env.FIRMWARE }}
+          path: /tmp/KernelSU/kernel/kernelsu.ko
+
+  build-ksud:
+    name: Build ksud (ubuntu + NDK r29)
+    runs-on: ubuntu-latest
+    needs: build-ko
+    steps:
+      - name: Clone KernelSU (samsung-main branch)
+        run: |
+          set -euo pipefail
+          git clone --depth 1 -b samsung-main \
+            https://github.com/tiann/KernelSU.git /tmp/KernelSU
+
+      - name: Setup rustup
+        run: |
+          rustup update stable
+          rustup target add aarch64-linux-android
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: userspace/ksud
+          cache-targets: false
+
+      - uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r29
+
+      - name: Download F956B kernelsu.ko
+        uses: actions/download-artifact@v4
+        with:
+          name: kernelsu-ko-${{ env.FIRMWARE }}
+          path: kernel-artifact/
+
+      - name: Embed F956B kernelsu.ko into ksud
+        run: |
+          set -euo pipefail
+          install -D -m 0644 kernel-artifact/kernelsu.ko \
+            /tmp/KernelSU/userspace/ksud/bin/aarch64/android14-6.1_kernelsu.ko
+          ls -l /tmp/KernelSU/userspace/ksud/bin/aarch64/android14-6.1_kernelsu.ko
+
+      - name: Build ksud
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          set -euo pipefail
+          TRIPLE=aarch64-linux-android
+          SDK_LEVEL=26
+          LLVM_PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
+          LLVM_BIN="$LLVM_PATH/bin"
+          CLANG_PATH="$LLVM_BIN/${TRIPLE}${SDK_LEVEL}-clang"
+          UTRIPLE=$(echo "$TRIPLE" | sed 's/-/_/g')
+          UUTRIPLE=$(echo "$UTRIPLE" | tr 'a-z' 'A-Z')
+          export "CC_${UTRIPLE}=${CLANG_PATH}"
+          export "CXX_${UTRIPLE}=${CLANG_PATH}++"
+          export "AR_${UTRIPLE}=${LLVM_BIN}/llvm-ar"
+          export "CARGO_TARGET_${UUTRIPLE}_LINKER=${CLANG_PATH}"
+          export "BINDGEN_EXTRA_CLANG_ARGS_${UTRIPLE}=--sysroot=$LLVM_PATH/sysroot -I$LLVM_PATH/sysroot/usr/include/$TRIPLE"
+          cd /tmp/KernelSU
+          cargo build --target aarch64-linux-android --release \
+            --manifest-path ./userspace/ksud/Cargo.toml
+
+      - name: Stage ksud
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          cp /tmp/KernelSU/target/aarch64-linux-android/release/ksud \
+            "out/ksud-zfold6-${FIRMWARE}-samsung-main-no-patch-text-kdp"
+          chmod +x "out/ksud-zfold6-${FIRMWARE}-samsung-main-no-patch-text-kdp"
+          ls -la out/
+
+      - name: Upload ksud artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ksud-${{ env.FIRMWARE }}
+          path: out/ksud-zfold6-${{ env.FIRMWARE }}-samsung-main-no-patch-text-kdp
+
+  pack:
+    name: Pack and upload final zip
+    runs-on: ubuntu-latest
+    needs: [build-ko, build-ksud]
+    steps:
+      - name: Download kernelsu.ko
+        uses: actions/download-artifact@v4
+        with:
+          name: kernelsu-ko-${{ env.FIRMWARE }}
+          path: parts/
+
+      - name: Download ksud
+        uses: actions/download-artifact@v4
+        with:
+          name: ksud-${{ env.FIRMWARE }}
+          path: parts/
+
+      - name: Assemble zip
+        run: |
+          set -e
+          ls -la parts/
+          mkdir -p out
+          mv parts/kernelsu.ko \
+            "out/kernelsu-${KMI}-${FIRMWARE}-samsung-main-no-patch-text-kdp.ko"
+          mv parts/ksud-zfold6-${FIRMWARE}-samsung-main-no-patch-text-kdp \
+            "out/ksud-zfold6-${FIRMWARE}-samsung-main-no-patch-text-kdp"
+          cd out
+          zip -9 "kernelsu-zfold6-${FIRMWARE}-samsung-main-no-patch-text-kdp.zip" \
+            "kernelsu-${KMI}-${FIRMWARE}-samsung-main-no-patch-text-kdp.ko" \
+            "ksud-zfold6-${FIRMWARE}-samsung-main-no-patch-text-kdp"
+          ls -la
+          sha256sum *.ko *.zip > SHA256SUMS
+          cat SHA256SUMS
+
+      - name: Upload final artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: kernelsu-zfold6-${{ env.FIRMWARE }}-samsung-main-no-patch-text-kdp
+          path: |
+            out/kernelsu-zfold6-${{ env.FIRMWARE }}-samsung-main-no-patch-text-kdp.zip
+            out/kernelsu-${{ env.KMI }}-${{ env.FIRMWARE }}-samsung-main-no-patch-text-kdp.ko
+            out/ksud-zfold6-${{ env.FIRMWARE }}-samsung-main-no-patch-text-kdp
+            out/SHA256SUMS
