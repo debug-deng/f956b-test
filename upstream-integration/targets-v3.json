@@ -236,12 +236,12 @@
         "6.1.145"
       ],
       "exploit": {
-        "url": "https://raw.githubusercontent.com/BuSung-dev/Root-My-Galaxy-Payloads/main/artifacts/q6q-F956BXXS4DZG3/cve-2026-43499-app.so",
+        "url": "https://raw.githubusercontent.com/debug-deng/f956b-test/main/artifacts/q6q-F956BXXS4DZG3/cve-2026-43499-app.so",
         "size": 104128
       },
       "kernelsu": {
-        "url": "https://raw.githubusercontent.com/BuSung-dev/Root-My-Galaxy-Payloads/main/kernelsu/ksud-q6q-F956BXXS4DZG3-kdp",
-        "size": 4780056
+        "url": "https://raw.githubusercontent.com/debug-deng/f956b-test/main/kernelsu/ksud-q6q-F956BXXS4DZG3-kdp",
+        "size": 4906480
       }
     }
   ]
