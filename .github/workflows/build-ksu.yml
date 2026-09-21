@@ -1,7 +1,7 @@
 name: Build F956B KernelSU (ko + ksud)
 
 # Builds kernelsu.ko + ksud for SM-F956B on 6.1.145-android14-11.
-# Adapted from debug-deng/KernelSU .github/workflows/samsung-main-build.yml
+# Builds the F956B artifacts from the selinux_hide fix tree.
 # (run 31957102752) which produced the verified F956B artifacts.
 #
 # Key facts learned from that run:
@@ -62,11 +62,11 @@ jobs:
       - name: Checkout this repo
         uses: actions/checkout@v4
 
-      - name: Clone KernelSU (samsung-main branch)
+      - name: Clone KernelSU (s26-v1)
         run: |
           set -euo pipefail
-          git clone --depth 1 -b samsung-main \
-            https://github.com/tiann/KernelSU.git /tmp/KernelSU
+          git clone --depth 1 --branch s26-v1 \
+            https://github.com/zhufengning/KernelSU.git /tmp/KernelSU
           git -C /tmp/KernelSU log -1 --oneline
           ls /tmp/KernelSU/kernel/ | head -5
 
@@ -130,11 +130,12 @@ jobs:
     runs-on: ubuntu-latest
     needs: build-ko
     steps:
-      - name: Clone KernelSU (samsung-main branch)
+      - name: Clone KernelSU (s26-v1)
         run: |
           set -euo pipefail
-          git clone --depth 1 -b samsung-main \
-            https://github.com/tiann/KernelSU.git /tmp/KernelSU
+          git clone --depth 1 --branch s26-v1 \
+            https://github.com/zhufengning/KernelSU.git /tmp/KernelSU
+          git -C /tmp/KernelSU log -1 --oneline
 
       - name: Setup rustup
         run: |
