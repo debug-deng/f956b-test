@@ -171,6 +171,10 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           set -euo pipefail
+          # Cargo's libgit2 backend cannot resolve the pinned public
+          # adb_client revision on the runner; use the Git CLI instead.
+          mkdir -p "$HOME/.cargo"
+          printf '%s\n' '[net]' 'git-fetch-with-cli = true' > "$HOME/.cargo/config.toml"
           TRIPLE=aarch64-linux-android
           SDK_LEVEL=26
           LLVM_PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
