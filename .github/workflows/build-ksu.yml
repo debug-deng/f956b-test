@@ -175,11 +175,17 @@ jobs:
           # adb_client revision on the runner; use the Git CLI instead.
           mkdir -p "$HOME/.cargo"
           printf '%s\n' '[net]' 'git-fetch-with-cli = true' > "$HOME/.cargo/config.toml"
-          # The s26-v1 manifest pins a deleted GitHub repository. The same
-          # adb_client API is published as crate 3.1.1, matching Cargo.lock.
-          sed -i 's#adb_client = { git = "https://github.com/Kernel-SU/adb_client" }#adb_client = "3.1.1"#' \
+          # s26-v1 pins deleted/private GitHub repositories. Use the public
+          # crates.io releases and the maintained upstream resetprop-rs source.
+          sed -i \
+            -e 's#adb_client = { git = "https://github.com/Kernel-SU/adb_client" }#adb_client = "3.1.1"#' \
+            -e 's#java-properties = { git = "https://github.com/Kernel-SU/java-properties.git", branch = "master", default-features = false }#java-properties = { version = "2.0.0", default-features = false }#' \
+            -e 's#prop-rs-android = { git = "https://github.com/Kernel-SU/ksu_props", rev = "6f5723105d8d4cacad31d83d343defbf032c7b33" }#prop-rs-android = { git = "https://github.com/5ec1cff/resetprop-rs", rev = "ddb6ee7294467f7f25bad2118e9e24eee104144b" }#' \
             /tmp/KernelSU/userspace/ksud/Cargo.toml
-          cargo update -p adb_client --precise 3.1.1 --manifest-path /tmp/KernelSU/userspace/ksud/Cargo.toml
+          sed -i \
+            's#rustix = { git = "https://github.com/Kernel-SU/rustix.git", rev = "4a53fbc", features = \["mount", "fs", "runtime", "system", "process"\] }#rustix = { version = "0.38.34", features = ["mount", "fs", "runtime", "system", "process"] }#' \
+            /tmp/KernelSU/userspace/ksuinit/Cargo.toml
+          cargo update --manifest-path /tmp/KernelSU/userspace/ksud/Cargo.toml
           TRIPLE=aarch64-linux-android
           SDK_LEVEL=26
           LLVM_PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
