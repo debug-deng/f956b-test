@@ -175,6 +175,11 @@ jobs:
           # adb_client revision on the runner; use the Git CLI instead.
           mkdir -p "$HOME/.cargo"
           printf '%s\n' '[net]' 'git-fetch-with-cli = true' > "$HOME/.cargo/config.toml"
+          # The s26-v1 manifest pins a deleted GitHub repository. The same
+          # adb_client API is published as crate 3.1.1, matching Cargo.lock.
+          sed -i 's#adb_client = { git = "https://github.com/Kernel-SU/adb_client" }#adb_client = "3.1.1"#' \
+            /tmp/KernelSU/userspace/ksud/Cargo.toml
+          cargo update -p adb_client --precise 3.1.1 --manifest-path /tmp/KernelSU/userspace/ksud/Cargo.toml
           TRIPLE=aarch64-linux-android
           SDK_LEVEL=26
           LLVM_PATH="$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64"
